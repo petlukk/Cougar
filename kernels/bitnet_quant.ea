@@ -1,0 +1,100 @@
+// bitnet_quant.ea — Quantization kernels for BitNet inference
+//
+// Two operations:
+// 1. quant_f32_i8: per-tensor f32 → int8 activation quantization (runtime, every token)
+// 2. pack_ternary_row: ternary {0,1,2} → packed 2-bit weight encoding (offline, model load)
+
+#[cfg(x86_64)]
+
+// Per-tensor activation quantization: f32 → int8
+// Pass 1: SIMD absmax over f32x8
+// Pass 2: scale by 127/absmax, narrow f32x4 → i8, store as i8x16
+// Returns scale factor via out_scale pointer.
+// n must be divisible by 4. Caller must allocate dst with 12 extra bytes
+// (narrow_f32x4_i8 writes 16 bytes per 4-element store).
+export func quant_f32_i8(
+    src: *restrict f32,
+    out dst: *mut i8 [cap: n + 12],
+    out out_scale: *mut f32 [cap: 1],
+    n: i32
+) {
+    // Pass 1: find absmax using f32x8 SIMD
+    let mut vmax: f32x8 = splat(0.0)
+    let vzero8: f32x8 = splat(0.0)
+    let mut i: i32 = 0
+    while i + 8 <= n {
+        let v: f32x8 = load(src, i)
+        let neg: f32x8 = vzero8 .- v
+        let abs_v: f32x8 = select(v .> neg, v, neg)
+        vmax = select(abs_v .> vmax, abs_v, vmax)
+        i = i + 8
+    }
+    let mut amax: f32 = reduce_max(vmax)
+    // Scalar tail for absmax
+    while i < n {
+        let mut av: f32 = src[i]
+        if av < 0.0 {
+            av = 0.0 - av
+        }
+        if av > amax {
+            amax = av
+        }
+        i = i + 1
+    }
+
+    out_scale[0] = amax
+
+    if amax < 0.000001 {
+        // Near-zero: store zero bytes via i8x16
+        let z16: i8x16 = splat(0)
+        i = 0
+        while i + 16 <= n {
+            store(dst, i, z16)
+            i = i + 16
+        }
+        while i < n {
+            dst[i] = 0
+            i = i + 1
+        }
+        return
+    }
+
+    // Pass 2: scale and narrow to i8 via narrow_f32x4_i8
+    let inv_scale: f32 = 127.0 / amax
+    let v_inv: f32x4 = splat(inv_scale)
+    let v_min: f32x4 = splat(-127.0)
+    let v_max: f32x4 = splat(127.0)
+
+    i = 0
+    while i + 4 <= n {
+        let v: f32x4 = load(src, i)
+        let scaled: f32x4 = v .* v_inv
+        let clamped: f32x4 = select(scaled .< v_min, v_min, select(scaled .> v_max, v_max, scaled))
+        // narrow_f32x4_i8: f32x4 → fptosi → trunc → i8x16 (lower 4 valid)
+        let narrow: i8x16 = narrow_f32x4_i8(clamped)
+        // Store 4 bytes — store writes 16 but only first 4 matter
+        // We step by 4, so next store overwrites the garbage upper bytes
+        store(dst, i, narrow)
+        i = i + 4
+    }
+}
+
+// Pack ternary values {0,1,2} into 2-bit packed bytes (BitNet I2_S format)
+// 4 values per byte: val[0] in bits 7:6, val[1] in bits 5:4, etc.
+// Input is one row of n ternary values, output is n/4 packed bytes.
+// n must be divisible by 4.
+export func pack_ternary_row(
+    ternary: *restrict u8,
+    out packed: *mut u8 [cap: n / 4],
+    n: i32
+) {
+    let mut i: i32 = 0
+    while i < n {
+        let v0: u8 = ternary[i]
+        let v1: u8 = ternary[i + 1]
+        let v2: u8 = ternary[i + 2]
+        let v3: u8 = ternary[i + 3]
+        packed[i / 4] = v0 * 64 + v1 * 16 + v2 * 4 + v3
+        i = i + 4
+    }
+}
