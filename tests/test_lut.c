@@ -129,9 +129,6 @@ static int test_matmul(int n_rows, int n_cols) {
     uint8_t *packed = calloc(n_rows * stride, 1);
     pack_row_major(ternary, packed, n_rows, n_cols);
 
-    uint8_t *prepared = calloc(n_rows * stride, 1);
-    prepare_lut_weights(packed, prepared, n_rows, n_cols);
-
     int32_t *expected = calloc(n_rows, sizeof(int32_t));
     ref_ternary_matmul_rowmajor(packed, act, expected, n_rows, n_cols);
 
@@ -139,7 +136,9 @@ static int test_matmul(int n_rows, int n_cols) {
     int main_rows = (n_rows / 16) * 16;
     int tail_rows = n_rows - main_rows;
 
+    uint8_t *prepared = calloc(main_rows > 0 ? main_rows * stride : 1, 1);
     if (main_rows > 0) {
+        prepare_lut_weights(packed, prepared, main_rows, n_cols);
         lut_matmul(prepared, act, got, main_rows, n_cols);
     }
     if (tail_rows > 0) {
