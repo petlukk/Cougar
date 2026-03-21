@@ -1,0 +1,145 @@
+// bitnet_i2s_arm.ea — ARM NEON ternary weight × int8 activation dot product
+//
+// ARM NEON port of bitnet_i2s.ea. Same algorithm, different intrinsic:
+// vdot_i32(i8x16, i8x16) -> i32x4 maps to ARM vdotq_s32 (ARMv8.2-A+).
+//
+// Unlike x86 maddubs_i32 (unsigned × signed), vdot_i32 is signed × signed.
+// Weight pointer is *i8 (not *u8) — values {0,1,2} fit in signed i8.
+//
+// Weight encoding and layout identical to x86:
+//   Ternary {-1, 0, +1} → 2-bit {0, 1, 2}, four per byte.
+//   QK=128: 32 packed bytes → 128 weights
+//   Group 0 (bits 7:6): weights[0..31]   matched with activations[0..31]
+//   Group 1 (bits 5:4): weights[32..63]  matched with activations[32..63]
+//   Group 2 (bits 3:2): weights[64..95]  matched with activations[64..95]
+//   Group 3 (bits 1:0): weights[96..127] matched with activations[96..127]
+//
+// Returns raw dot product (caller applies ternary offset correction + scale).
+
+#[cfg(aarch64)]
+
+// Single-row dot product: one weight row × one activation vector
+export func i2_dot_i8(
+    weights: *restrict i8,
+    activations: *restrict i8,
+    n: i32
+) -> i32 {
+    let mask: i8x16 = splat(3)
+    let s6: i8x16 = splat(6)
+    let s4: i8x16 = splat(4)
+    let s2: i8x16 = splat(2)
+    let mut acc: i32x4 = splat(0)
+    let n_blocks: i32 = n / 128
+
+    let mut blk: i32 = 0
+    while blk < n_blocks {
+        let base_w: i32 = blk * 32
+        let base_a: i32 = blk * 128
+
+        let mut half: i32 = 0
+        while half < 2 {
+            let pw: i32 = base_w + half * 16
+            let off: i32 = half * 16
+
+            let packed: i8x16 = load(weights, pw)
+
+            // Unpack 4 groups of 2-bit weights
+            let g0: i8x16 = (packed .>> s6) .& mask
+            let g1: i8x16 = (packed .>> s4) .& mask
+            let g2: i8x16 = (packed .>> s2) .& mask
+            let g3: i8x16 = packed .& mask
+
+            // Load 16 activations from each 32-element group
+            let a0: i8x16 = load(activations, base_a + off)
+            let a1: i8x16 = load(activations, base_a + 32 + off)
+            let a2: i8x16 = load(activations, base_a + 64 + off)
+            let a3: i8x16 = load(activations, base_a + 96 + off)
+
+            // vdot_i32: i8×i8 dot product in groups of 4 → i32x4
+            acc = acc .+ vdot_i32(g0, a0)
+            acc = acc .+ vdot_i32(g1, a1)
+            acc = acc .+ vdot_i32(g2, a2)
+            acc = acc .+ vdot_i32(g3, a3)
+
+            half = half + 1
+        }
+        blk = blk + 1
+    }
+
+    return reduce_add(acc)
+}
+
+// Multi-row dot product: 4 weight rows × one activation vector
+export func i2_dot_i8_4row(
+    rw0: *restrict i8,
+    rw1: *restrict i8,
+    rw2: *restrict i8,
+    rw3: *restrict i8,
+    activations: *restrict i8,
+    out scores: *mut i32 [cap: 4],
+    n: i32
+) {
+    let mask: i8x16 = splat(3)
+    let s6: i8x16 = splat(6)
+    let s4: i8x16 = splat(4)
+    let s2: i8x16 = splat(2)
+    let mut r0: i32x4 = splat(0)
+    let mut r1: i32x4 = splat(0)
+    let mut r2: i32x4 = splat(0)
+    let mut r3: i32x4 = splat(0)
+    let n_blocks: i32 = n / 128
+
+    let mut blk: i32 = 0
+    while blk < n_blocks {
+        let bw: i32 = blk * 32
+        let ba: i32 = blk * 128
+
+        let mut half: i32 = 0
+        while half < 2 {
+            let pw: i32 = bw + half * 16
+            let off: i32 = half * 16
+
+            // Load activations once, reuse across all 4 rows
+            let a0: i8x16 = load(activations, ba + off)
+            let a1: i8x16 = load(activations, ba + 32 + off)
+            let a2: i8x16 = load(activations, ba + 64 + off)
+            let a3: i8x16 = load(activations, ba + 96 + off)
+
+            // Row 0
+            let p0: i8x16 = load(rw0, pw)
+            r0 = r0 .+ vdot_i32((p0 .>> s6) .& mask, a0)
+            r0 = r0 .+ vdot_i32((p0 .>> s4) .& mask, a1)
+            r0 = r0 .+ vdot_i32((p0 .>> s2) .& mask, a2)
+            r0 = r0 .+ vdot_i32(p0 .& mask, a3)
+
+            // Row 1
+            let p1: i8x16 = load(rw1, pw)
+            r1 = r1 .+ vdot_i32((p1 .>> s6) .& mask, a0)
+            r1 = r1 .+ vdot_i32((p1 .>> s4) .& mask, a1)
+            r1 = r1 .+ vdot_i32((p1 .>> s2) .& mask, a2)
+            r1 = r1 .+ vdot_i32(p1 .& mask, a3)
+
+            // Row 2
+            let p2: i8x16 = load(rw2, pw)
+            r2 = r2 .+ vdot_i32((p2 .>> s6) .& mask, a0)
+            r2 = r2 .+ vdot_i32((p2 .>> s4) .& mask, a1)
+            r2 = r2 .+ vdot_i32((p2 .>> s2) .& mask, a2)
+            r2 = r2 .+ vdot_i32(p2 .& mask, a3)
+
+            // Row 3
+            let p3: i8x16 = load(rw3, pw)
+            r3 = r3 .+ vdot_i32((p3 .>> s6) .& mask, a0)
+            r3 = r3 .+ vdot_i32((p3 .>> s4) .& mask, a1)
+            r3 = r3 .+ vdot_i32((p3 .>> s2) .& mask, a2)
+            r3 = r3 .+ vdot_i32(p3 .& mask, a3)
+
+            half = half + 1
+        }
+        blk = blk + 1
+    }
+
+    scores[0] = reduce_add(r0)
+    scores[1] = reduce_add(r1)
+    scores[2] = reduce_add(r2)
+    scores[3] = reduce_add(r3)
+}

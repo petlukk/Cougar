@@ -17,13 +17,13 @@ with portable `.ea` kernels. Part of the Eä ecosystem alongside eakv
 │    ├── eabitnet kernels                     │
 │    │     ├── bitnet_i2s.ea        ✅ done   │
 │    │     ├── bitnet_quant.ea      ✅ done   │
-│    │     ├── bitnet_i2s_arm.ea    🔲 arm    │
+│    │     ├── bitnet_i2s_arm.ea    ✅ done   │
 │    │     └── bitnet_lut.ea        🔲 lut    │
 │    └── eakv (KV cache)            ✅ exists │
 ├─────────────────────────────────────────────┤
 │  eacompute (compiler)             ✅ exists │
 │    ├── shuffle_bytes intrinsic    🔲 lut    │
-│    └── dot_i32 intrinsic          🔲 arm    │
+│    └── vdot_i32 intrinsic         ✅ done   │
 └─────────────────────────────────────────────┘
 ```
 
@@ -45,7 +45,7 @@ token in
 |--------|-----------|-------|--------|
 | `bitnet_i2s.ea` | `i2_dot_i8`, `i2_dot_i8_4row` | 12/12 | Done (x86) |
 | `bitnet_quant.ea` | `quant_f32_i8`, `pack_ternary_row` | 13/13 | Done (x86) |
-| `bitnet_i2s_arm.ea` | same API, NEON path | — | Needs `dot_i32` intrinsic + Pi |
+| `bitnet_i2s_arm.ea` | `i2_dot_i8`, `i2_dot_i8_4row` | 12/12 | Done (aarch64, Pi 5) |
 | `bitnet_lut.ea` | LUT-based ternary matmul | — | Needs `shuffle_bytes` intrinsic |
 
 ## Remaining work
@@ -57,9 +57,9 @@ token in
   Uses `shuffle_bytes` for 16-entry byte lookup instead of multiplication.
   Blocked on: `shuffle_bytes` intrinsic in eacompute.
 
-- **`bitnet_i2s_arm.ea`** — ARM NEON path for the I2_S dot product.
-  Same algorithm, different intrinsic (`dot_i32` instead of `maddubs_i32`).
-  Blocked on: `dot_i32` intrinsic in eacompute + Raspberry Pi for testing.
+- ~~**`bitnet_i2s_arm.ea`**~~ ✅ Done.
+  ARM NEON path for the I2_S dot product. Uses `vdot_i32` (signed×signed).
+  12/12 tests passing on Pi 5, ~28 Gop/s.
 
 ### Compiler (eacompute)
 
@@ -67,8 +67,11 @@ token in
   Maps to `vpshufb` (x86) / `tbl` (ARM). Not the same as `shuffle` which is
   compile-time lane permutation. This is data-driven: indices come from weights.
 
-- **`dot_i32(i8x16, i8x16) -> i32x4`** — ARM NEON signed dot product.
-  Maps to `vdotq_s32` (ARMv8.2+). The ARM equivalent of `maddubs_i32`.
+- ~~**`vdot_i32(i8x16, i8x16) -> i32x4`**~~ ✅ Done.
+  ARM NEON signed dot product. Maps to `vdotq_s32` (ARMv8.2+).
+  ARM-only, errors on x86. Gated behind `--dotprod` flag.
+  Not an alias for `maddubs_i32` — different signedness (signed×signed
+  vs unsigned×signed) and no intermediate saturation step.
 
 ### Integration
 
