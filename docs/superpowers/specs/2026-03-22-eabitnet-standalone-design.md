@@ -8,14 +8,14 @@ lines and faster than Microsoft's BitNet.cpp.
 
 ## Goal
 
-~1720 lines total (~840 Eä + ~880 Rust). Microsoft's `ggml-bitnet-mad.cpp` alone
+~2000 lines total (~850 Eä + ~1150 Rust). Microsoft's `ggml-bitnet-mad.cpp` alone
 is 1056 lines of hand-written intrinsics, on top of the entire llama.cpp framework.
 
 ## Model
 
 Microsoft BitNet b1.58 2B-4T:
 - 24 layers, 2560 hidden dim, 32 attention heads, 80 head dim
-- 6912 FFN intermediate, 32K vocab
+- 6912 FFN intermediate, 32768 vocab
 - RoPE positional encoding, squared ReLU activation, RMSNorm
 - I2_S ternary weights (~1.19 GB GGUF)
 - No GQA (32 KV heads = 32 attention heads, 1:1)
@@ -33,14 +33,15 @@ eabitnet/
 │   ├── bitnet_softmax.ea       # NEW: exp + normalize (~50 lines)
 │   ├── bitnet_rope.ea          # NEW: sin/cos positional encoding (~40 lines)
 │   ├── bitnet_attention.ea     # NEW: batched QK dot + V accumulate (~60 lines)
-│   └── bitnet_activate.ea      # NEW: squared ReLU fused (~25 lines)
+│   ├── bitnet_activate.ea      # NEW: squared ReLU fused (~25 lines)
+│   └── bitnet_vecadd.ea        # NEW: f32 residual add (~15 lines)
 ├── src/                        # Rust glue
 │   ├── main.rs                 # CLI entry (~50 lines)
-│   ├── gguf.rs                 # GGUF parser (~200 lines)
-│   ├── tokenizer.rs            # BPE encode/decode (~200 lines)
+│   ├── gguf.rs                 # GGUF parser (~280 lines)
+│   ├── tokenizer.rs            # BPE encode/decode (~280 lines)
 │   ├── model.rs                # weight loading + model struct (~150 lines)
-│   ├── forward.rs              # transformer forward pass (~200 lines)
-│   └── ffi.rs                  # Eä kernel FFI declarations (~80 lines)
+│   ├── forward.rs              # transformer forward pass (~280 lines)
+│   └── ffi.rs                  # Eä kernel FFI declarations (~100 lines)
 ├── build_kernels.sh            # compile .ea → .so
 ├── Cargo.toml
 └── tests/                      # kernel tests (existing) + integration
@@ -91,8 +92,14 @@ eabitnet/
 
 **bitnet_activate.ea** (~25 lines)
 - `squared_relu_mul_f32(gate: *f32, up: *f32, out: *mut f32, n: i32)`
-- Fused: `out[i] = (gate[i] * |gate[i]|) * up[i]`
-- Branchless abs via `select`, single f32x8 pass
+- Fused: `out[i] = max(0, gate[i])^2 * up[i]`
+- Branchless clamp via `select(gate > 0, gate, 0)`, then square, then multiply by up
+- Single f32x8 pass
+
+**bitnet_vecadd.ea** (~15 lines)
+- `vecadd_f32(a: *f32, b: *f32, out: *mut f32, n: i32)`
+- Element-wise `out[i] = a[i] + b[i]`, f32x8 SIMD
+- Used for residual connections (48 calls per token)
 
 ## Transformer Forward Pass
 
@@ -114,36 +121,55 @@ token_id
       │     ├── softmax_f32(scores, scores, seq_len)
       │     └── attn_weighted_sum_f32(scores, V_cache[h], attn_out[h], 80, seq_len)
       ├── quant_f32_i8(attn_out)
-      ├── O = i2_dot_i8_4row(attn_out_i8, W_o)
-      ├── x = x + O                          # Rust: vector add
+      ├── O = i2_dot_i8_4row(attn_out_i8, W_o)    # apply scale correction
+      ├── vecadd_f32(x, O, x)                      # residual
       ├── rmsnorm_f32(x, ffn_norm_weight)
       ├── quant_f32_i8(normed)
       ├── gate = i2_dot_i8_4row(x_i8, W_gate)  # 2560 → 6912
       ├── up   = i2_dot_i8_4row(x_i8, W_up)    # 2560 → 6912
       ├── squared_relu_mul_f32(gate, up, hidden)
       ├── quant_f32_i8(hidden)
-      ├── down = i2_dot_i8_4row(hidden_i8, W_down)  # 6912 → 2560
-      └── x = x + down                       # Rust: vector add
+      ├── down = i2_dot_i8_4row(hidden_i8, W_down)  # 6912 → 2560, apply scale
+      └── vecadd_f32(x, down, x)                    # residual
   → rmsnorm_f32(x, final_norm_weight)
-  → logits = i2_dot_i8_4row(x_i8, W_vocab)   # 2560 → 32000
+  → quant_f32_i8(normed) → i8 activations + scale
+  → logits = i2_dot_i8_4row(x_i8, W_vocab)   # 2560 → 32768, apply scale
   → sample(logits)                             # Rust: temperature + top-p
 ```
 
 Each linear layer requires a quant step before it (BitNet quantizes activations
 to i8 before ternary matmul). 7 linear layers per transformer layer + 1 final
-= 169 quant + matmul calls per token.
+= 170 quant + matmul calls per token.
+
+## Scale Correction After Matmul
+
+Each `i2_dot_i8` call returns a raw i32. To get the true f32 result:
+
+```
+result_f32 = (raw_i32 - activation_sum) * activation_scale * weight_scale
+```
+
+Where:
+- `activation_sum` = sum of i8 activations (ternary offset correction)
+- `activation_scale` = absmax/127 from `quant_f32_i8`
+- `weight_scale` = per-tensor f32 scale from GGUF
+
+The activation sum is computed by extending `quant_f32_i8` to output it
+(add `out_sum: *mut i32` parameter), or by a separate `sum_i8` reduction.
+Applied in `forward.rs` after every matmul call.
 
 ## Rust Components
 
-**gguf.rs** (~200 lines)
-- Parse GGUF v3 header, metadata KV pairs, tensor info
+**gguf.rs** (~280 lines)
+- Parse GGUF v3 header, metadata KV pairs (12 value types), tensor info
 - Memory-map tensor data (mmap, no copy)
+- Handle string values, alignment padding, byte arithmetic
 - Extract model hyperparams + vocab from metadata
 - Return `GgufFile` with metadata + tensor offset map
 
-**tokenizer.rs** (~200 lines)
+**tokenizer.rs** (~280 lines)
 - BPE encode/decode parsed from GGUF vocab metadata
-- Byte-level BPE (LLaMA tokenizer format)
+- Byte-level BPE (LLaMA tokenizer format): merge priority queue, UTF-8 fallback
 - No external dependencies
 
 **model.rs** (~150 lines)
@@ -151,13 +177,14 @@ to i8 before ternary matmul). 7 linear layers per transformer layer + 1 final
 - `load(path)` — parse GGUF, validate shapes, store weight pointers
 - No copying — I2_S weights stay in mmap, ready for Eä kernels
 
-**forward.rs** (~200 lines)
+**forward.rs** (~280 lines)
 - `generate(model, tokens, max_tokens) -> Vec<u32>`
 - Allocates scratch buffers once: hidden states, QKV, attention scores, KV cache
 - KV cache: `[n_layers][max_seq_len][n_heads][head_dim]` plain f32
+- Scale correction after every matmul (offset + activation_scale * weight_scale)
 - Temperature + top-p sampling
 
-**ffi.rs** (~80 lines)
+**ffi.rs** (~100 lines)
 - `extern "C"` declarations for all Eä kernels
 - Debug-mode slice length assertions
 
@@ -177,9 +204,13 @@ values, or accumulated during quant).
 
 Matches Microsoft's GGUF format:
 - Block size: QK=128 (128 ternary weights per block)
-- Block layout: 32 bytes = 4 groups of 8 bytes, each group packs 32 weights at 2 bits
+- Block layout: 32 bytes = 128 weights. Each byte contains one 2-bit weight from
+  each of 4 groups: bits 7:6 → group 0 (activations[0..31]), bits 5:4 → group 1
+  (activations[32..63]), bits 3:2 → group 2 (activations[64..95]), bits 1:0 → group 3
+  (activations[96..127]). The kernel extracts groups by shifting and masking.
 - Encoding: `0b00 = 0 (maps to -1)`, `0b01 = 1 (maps to 0)`, `0b10 = 2 (maps to +1)`
-- Per-tensor f32 scale (stored separately in GGUF metadata)
+- Per-tensor f32 scale stored in GGUF tensor metadata (part of tensor type info,
+  not a separate KV pair — verify exact location against actual GGUF file)
 
 ## Build
 
