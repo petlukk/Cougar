@@ -3,3 +3,4 @@ build/
 *.o
 *.s
 *.ea.json
+target/
