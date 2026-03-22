@@ -285,12 +285,12 @@ impl InferenceState {
                 &mut self.tmp, h, h, &mut self.raw_scores,
             );
 
-            // attn_sub_norm on O projection output
-            unsafe {
-                ffi::rmsnorm_f32(
-                    self.tmp.as_ptr(), lw.attn_sub_norm, self.tmp.as_mut_ptr(),
-                    h as i32, model.rms_eps,
-                );
+            // attn_sub_norm: element-wise scaling (NOT rmsnorm — just x * weight)
+            {
+                let w = unsafe { std::slice::from_raw_parts(lw.attn_sub_norm, h) };
+                for i in 0..h {
+                    self.tmp[i] *= w[i];
+                }
             }
 
             // Residual: x = x + O
@@ -330,24 +330,20 @@ impl InferenceState {
                 &mut self.up, f, h, &mut self.raw_scores,
             );
 
-            // ffn_sub_norm on gate and up outputs before activation
-            unsafe {
-                ffi::rmsnorm_f32(
-                    self.gate.as_ptr(), lw.ffn_sub_norm, self.gate.as_mut_ptr(),
-                    f as i32, model.rms_eps,
-                );
-                ffi::rmsnorm_f32(
-                    self.up.as_ptr(), lw.ffn_sub_norm, self.up.as_mut_ptr(),
-                    f as i32, model.rms_eps,
-                );
-            }
-
-            // Activation: squared_relu_mul
+            // Squared ReLU activation: hidden = relu²(gate) * up
             unsafe {
                 ffi::squared_relu_mul_f32(
                     self.gate.as_ptr(), self.up.as_ptr(),
                     self.hidden.as_mut_ptr(), f as i32,
                 );
+            }
+
+            // ffn_sub_norm: element-wise scaling on FFN intermediate [6912]
+            {
+                let w = unsafe { std::slice::from_raw_parts(lw.ffn_sub_norm, f) };
+                for i in 0..f {
+                    self.hidden[i] *= w[i];
+                }
             }
 
             // Quantize FFN hidden, down projection

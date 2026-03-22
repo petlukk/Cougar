@@ -80,21 +80,6 @@ fn load_i2s_tensor(
     name: &str,
     bufs: &mut Vec<Vec<u8>>,
 ) -> Result<(*const u8, f32), String> {
-    static LUT: std::sync::LazyLock<[u8; 256]> = std::sync::LazyLock::new(|| {
-        let mut tbl = [0u8; 256];
-        for b in 0..=255u8 {
-            let g0 = (b >> 6) & 3;
-            let g1 = (b >> 4) & 3;
-            let g2 = (b >> 2) & 3;
-            let g3 = b & 3;
-            tbl[b as usize] = (((g0 + 1) % 3) << 6)
-                | (((g1 + 1) % 3) << 4)
-                | (((g2 + 1) % 3) << 2)
-                | ((g3 + 1) % 3);
-        }
-        tbl
-    });
-
     let data = gguf
         .tensor_data(name)
         .ok_or_else(|| format!("missing tensor: {name}"))?;
@@ -105,12 +90,10 @@ fn load_i2s_tensor(
     let sb = &data[scale_off..scale_off + 4];
     let scale = f32::from_le_bytes([sb[0], sb[1], sb[2], sb[3]]);
 
+    // GGUF I2_S encoding matches our kernel: 0=-1, 1=0, 2=+1. No remap needed.
     let weight_bytes = &data[..scale_off];
     let mut repacked = Vec::with_capacity(weight_bytes.len());
-    let lut = &*LUT;
-    for &b in weight_bytes {
-        repacked.push(lut[b as usize]);
-    }
+    repacked.extend_from_slice(weight_bytes);
     let ptr = repacked.as_ptr();
     bufs.push(repacked);
     Ok((ptr, scale))
