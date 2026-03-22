@@ -8,24 +8,26 @@ pub struct BitNetModel {
     pub n_heads: usize,
     pub n_kv_heads: usize,
     pub head_dim: usize,
+    pub kv_dim: usize,
     pub ffn_dim: usize,
     pub vocab_size: usize,
     pub rope_theta: f32,
     pub rms_eps: f32,
 
     pub layers: Vec<LayerWeights>,
-    pub embed_weight: *const f32,
+    pub embed_weight: *const u8,
     pub norm_weight: *const f32,
-    pub output_weight: *const u8,
 }
 
 pub struct LayerWeights {
     pub attn_norm: *const f32,
+    pub attn_sub_norm: *const f32,
     pub wq: *const u8,
     pub wk: *const u8,
     pub wv: *const u8,
     pub wo: *const u8,
     pub ffn_norm: *const f32,
+    pub ffn_sub_norm: *const f32,
     pub w_gate: *const u8,
     pub w_up: *const u8,
     pub w_down: *const u8,
@@ -66,28 +68,31 @@ fn get_meta_f32(gguf: &GgufFile, key: &str) -> Option<f32> {
 
 impl BitNetModel {
     pub fn from_gguf(gguf: &GgufFile) -> Result<Self, String> {
-        let n_layers = get_meta_u32(gguf, "llama.block_count")
-            .or_else(|| get_meta_u32(gguf, "general.block_count"))
+        let arch = gguf.get_str("general.architecture").unwrap_or("llama");
+        let key = |suffix: &str| format!("{arch}.{suffix}");
+
+        let n_layers = get_meta_u32(gguf, &key("block_count"))
             .ok_or("missing metadata: block_count")? as usize;
 
-        let hidden_dim = get_meta_u32(gguf, "llama.embedding_length")
+        let hidden_dim = get_meta_u32(gguf, &key("embedding_length"))
             .ok_or("missing metadata: embedding_length")? as usize;
 
-        let n_heads = get_meta_u32(gguf, "llama.attention.head_count")
+        let n_heads = get_meta_u32(gguf, &key("attention.head_count"))
             .ok_or("missing metadata: head_count")? as usize;
 
-        let n_kv_heads = get_meta_u32(gguf, "llama.attention.head_count_kv")
+        let n_kv_heads = get_meta_u32(gguf, &key("attention.head_count_kv"))
             .unwrap_or(n_heads as u32) as usize;
 
         let head_dim = hidden_dim / n_heads;
+        let kv_dim = n_kv_heads * head_dim;
 
-        let ffn_dim = get_meta_u32(gguf, "llama.feed_forward_length")
+        let ffn_dim = get_meta_u32(gguf, &key("feed_forward_length"))
             .ok_or("missing metadata: feed_forward_length")? as usize;
 
-        let rope_theta = get_meta_f32(gguf, "llama.rope.freq_base")
+        let rope_theta = get_meta_f32(gguf, &key("rope.freq_base"))
             .unwrap_or(10000.0);
 
-        let rms_eps = get_meta_f32(gguf, "llama.attention.layer_norm_rms_epsilon")
+        let rms_eps = get_meta_f32(gguf, &key("attention.layer_norm_rms_epsilon"))
             .unwrap_or(1e-5);
 
         // Get vocab_size from embedding tensor dimensions
@@ -97,7 +102,7 @@ impl BitNetModel {
             .ok_or("missing tensor: token_embd.weight")?;
         let embed_dims = &gguf.tensors[embed_idx].dims;
         let vocab_size = if embed_dims.len() == 2 {
-            embed_dims[1] as usize // [hidden_dim, vocab_size] — GGUF is row-major
+            embed_dims[1] as usize
         } else {
             return Err(format!(
                 "token_embd.weight: expected 2 dims, got {}",
@@ -105,19 +110,21 @@ impl BitNetModel {
             ));
         };
 
-        let embed_weight: *const f32 = tensor_ptr(gguf, "token_embd.weight")?;
+        // Tied embeddings: token_embd.weight is F16, used for both embed and output
+        let embed_weight: *const u8 = tensor_ptr(gguf, "token_embd.weight")?;
         let norm_weight: *const f32 = tensor_ptr(gguf, "output_norm.weight")?;
-        let output_weight: *const u8 = tensor_ptr(gguf, "output.weight")?;
 
         let mut layers = Vec::with_capacity(n_layers);
         for i in 0..n_layers {
             layers.push(LayerWeights {
                 attn_norm: tensor_ptr(gguf, &format!("blk.{i}.attn_norm.weight"))?,
+                attn_sub_norm: tensor_ptr(gguf, &format!("blk.{i}.attn_sub_norm.weight"))?,
                 wq: tensor_ptr(gguf, &format!("blk.{i}.attn_q.weight"))?,
                 wk: tensor_ptr(gguf, &format!("blk.{i}.attn_k.weight"))?,
                 wv: tensor_ptr(gguf, &format!("blk.{i}.attn_v.weight"))?,
                 wo: tensor_ptr(gguf, &format!("blk.{i}.attn_output.weight"))?,
                 ffn_norm: tensor_ptr(gguf, &format!("blk.{i}.ffn_norm.weight"))?,
+                ffn_sub_norm: tensor_ptr(gguf, &format!("blk.{i}.ffn_sub_norm.weight"))?,
                 w_gate: tensor_ptr(gguf, &format!("blk.{i}.ffn_gate.weight"))?,
                 w_up: tensor_ptr(gguf, &format!("blk.{i}.ffn_up.weight"))?,
                 w_down: tensor_ptr(gguf, &format!("blk.{i}.ffn_down.weight"))?,
@@ -130,6 +137,7 @@ impl BitNetModel {
             n_heads,
             n_kv_heads,
             head_dim,
+            kv_dim,
             ffn_dim,
             vocab_size,
             rope_theta,
@@ -137,7 +145,6 @@ impl BitNetModel {
             layers,
             embed_weight,
             norm_weight,
-            output_weight,
         })
     }
 }

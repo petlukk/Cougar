@@ -87,9 +87,9 @@ fn main() {
     });
 
     eprintln!(
-        "Model: {} layers, {} hidden, {} heads, {} head_dim, {} ffn, {} vocab",
-        model.n_layers, model.hidden_dim, model.n_heads, model.head_dim,
-        model.ffn_dim, model.vocab_size,
+        "Model: {} layers, {} hidden, {} heads ({} kv), {} head_dim, {} kv_dim, {} ffn, {} vocab",
+        model.n_layers, model.hidden_dim, model.n_heads, model.n_kv_heads,
+        model.head_dim, model.kv_dim, model.ffn_dim, model.vocab_size,
     );
 
     // Encode prompt (prepend BOS)

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-const GGUF_MAGIC: u32 = 0x4647_5547;
+const GGUF_MAGIC: u32 = 0x4655_4747; // "GGUF" as little-endian u32
 const ALIGNMENT: u64 = 32;
 
 #[derive(Debug, Clone)]
@@ -197,6 +197,7 @@ fn gguf_type_size(dtype: u32) -> Result<(usize, usize), String> {
         30 => Ok((16, 1)),  // BF16
         31 => Ok((2, 32)),  // TQ1_0: ternary
         32 => Ok((2, 32)),  // TQ2_0: ternary
+        36 => Ok((2, 1)),   // I2_S: 2 bits per element
         _ => Err(format!("unknown tensor dtype {dtype}")),
     }
 }
