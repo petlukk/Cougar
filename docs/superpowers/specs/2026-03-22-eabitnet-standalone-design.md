@@ -137,9 +137,9 @@ token_id
   → sample(logits)                             # Rust: temperature + top-p
 ```
 
-Each linear layer requires a quant step before it (BitNet quantizes activations
-to i8 before ternary matmul). 7 linear layers per transformer layer + 1 final
-= 170 quant + matmul calls per token.
+Each linear layer requires quantized i8 activations. Multiple matmuls can share
+one quant step (QKV share one, gate/up share one). Per token: 169 matmul calls,
+97 quant steps (4 per layer × 24 + 1 final).
 
 ## Scale Correction After Matmul
 
@@ -150,12 +150,14 @@ result_f32 = (raw_i32 - activation_sum) * activation_scale * weight_scale
 ```
 
 Where:
-- `activation_sum` = sum of i8 activations (ternary offset correction)
-- `activation_scale` = absmax/127 from `quant_f32_i8`
+- `activation_sum` = sum of the i8 activations (must be i8 domain, not f32,
+  since the raw i32 dot product operates on i8 values)
+- `activation_scale` = `quant_f32_i8` stores raw absmax via `out_scale`;
+  Rust divides by 127: `activation_scale = out_scale / 127.0`
 - `weight_scale` = per-tensor f32 scale from GGUF
 
 The activation sum is computed by extending `quant_f32_i8` to output it
-(add `out_sum: *mut i32` parameter), or by a separate `sum_i8` reduction.
+(add `out_sum: *mut i32` parameter that accumulates i8 values during quant).
 Applied in `forward.rs` after every matmul call.
 
 ## Rust Components
