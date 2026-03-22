@@ -36,6 +36,9 @@ void rmsnorm_f32(const float *x, const float *weight, float *out, int32_t n, flo
 // Softmax: numerically stable, fast exp polynomial
 void softmax_f32(const float *x, float *out, int32_t n);
 
+// RoPE: in-place rotation of Q and K by precomputed (cos,sin) frequency pairs
+void rope_f32(float *q, float *k, const float *freqs, int32_t head_dim, int32_t n_heads);
+
 #ifdef __cplusplus
 }
 #endif
