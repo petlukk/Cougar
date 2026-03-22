@@ -271,7 +271,15 @@ impl InferenceState {
                 }
             }
 
-            // Quantize attention output, O projection
+            // attn_sub_norm (RMSNorm) applied to attention output BEFORE O projection
+            unsafe {
+                ffi::rmsnorm_f32(
+                    self.attn_out.as_ptr(), lw.attn_sub_norm, self.attn_out.as_mut_ptr(),
+                    h as i32, model.rms_eps,
+                );
+            }
+
+            // Quantize sub-normed attention output, O projection
             let mut attn_scale: f32 = 0.0;
             let mut attn_sum: i32 = 0;
             unsafe {
@@ -284,14 +292,6 @@ impl InferenceState {
                 lw.wo, self.attn_out_quant.as_ptr(), attn_scale, attn_sum, lw.wo_scale,
                 &mut self.tmp, h, h, &mut self.raw_scores,
             );
-
-            // attn_sub_norm: element-wise scaling (NOT rmsnorm — just x * weight)
-            {
-                let w = unsafe { std::slice::from_raw_parts(lw.attn_sub_norm, h) };
-                for i in 0..h {
-                    self.tmp[i] *= w[i];
-                }
-            }
 
             // Residual: x = x + O
             unsafe {
@@ -338,12 +338,12 @@ impl InferenceState {
                 );
             }
 
-            // ffn_sub_norm: element-wise scaling on FFN intermediate [6912]
-            {
-                let w = unsafe { std::slice::from_raw_parts(lw.ffn_sub_norm, f) };
-                for i in 0..f {
-                    self.hidden[i] *= w[i];
-                }
+            // ffn_sub_norm (RMSNorm) on FFN intermediate before down projection
+            unsafe {
+                ffi::rmsnorm_f32(
+                    self.hidden.as_ptr(), lw.ffn_sub_norm, self.hidden.as_mut_ptr(),
+                    f as i32, model.rms_eps,
+                );
             }
 
             // Quantize FFN hidden, down projection
