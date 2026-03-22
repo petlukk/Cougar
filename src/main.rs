@@ -1,6 +1,7 @@
 mod ffi;
 mod forward;
 mod gguf;
+mod matmul;
 mod model;
 mod tokenizer;
 
