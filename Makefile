@@ -19,6 +19,7 @@ test: kernels
 	$(CC) $(CFLAGS) tests/test_rmsnorm.c -L$(LIB) -lbitnet_rmsnorm -o $(BUILD)/test_rmsnorm -lm
 	$(CC) $(CFLAGS) tests/test_softmax.c -L$(LIB) -lbitnet_softmax -o $(BUILD)/test_softmax -lm
 	$(CC) $(CFLAGS) tests/test_rope.c -L$(LIB) -lbitnet_rope -o $(BUILD)/test_rope -lm
+	$(CC) $(CFLAGS) tests/test_attention.c -L$(LIB) -lbitnet_attention -o $(BUILD)/test_attention -lm
 	LD_LIBRARY_PATH=$(LIB) $(BUILD)/test_i2s
 	LD_LIBRARY_PATH=$(LIB) $(BUILD)/test_quant
 	LD_LIBRARY_PATH=$(LIB) $(BUILD)/test_lut
@@ -26,6 +27,7 @@ test: kernels
 	LD_LIBRARY_PATH=$(LIB) $(BUILD)/test_rmsnorm
 	LD_LIBRARY_PATH=$(LIB) $(BUILD)/test_softmax
 	LD_LIBRARY_PATH=$(LIB) $(BUILD)/test_rope
+	LD_LIBRARY_PATH=$(LIB) $(BUILD)/test_attention
 
 clean:
 	rm -rf $(BUILD)

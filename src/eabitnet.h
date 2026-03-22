@@ -39,6 +39,14 @@ void softmax_f32(const float *x, float *out, int32_t n);
 // RoPE: in-place rotation of Q and K by precomputed (cos,sin) frequency pairs
 void rope_f32(float *q, float *k, const float *freqs, int32_t head_dim, int32_t n_heads);
 
+// Attention: scaled dot products Q·K for all cached tokens
+void attn_scores_f32(const float *q, const float *k_cache, float *out,
+                     int32_t head_dim, int32_t seq_len, float scale);
+
+// Attention: weighted sum out = Σ scores[t] * V[t]
+void attn_weighted_sum_f32(const float *scores, const float *v_cache, float *out,
+                           int32_t head_dim, int32_t seq_len);
+
 #ifdef __cplusplus
 }
 #endif
