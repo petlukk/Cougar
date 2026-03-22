@@ -30,6 +30,9 @@ void pack_ternary_row(const uint8_t *ternary, uint8_t *packed, int32_t n);
 // Element-wise f32 vector addition (residual connections)
 void vecadd_f32(const float *a, const float *b, float *out, int32_t n);
 
+// RMSNorm: out[i] = x[i] * weight[i] / sqrt(mean(x^2) + eps)
+void rmsnorm_f32(const float *x, const float *weight, float *out, int32_t n, float eps);
+
 #ifdef __cplusplus
 }
 #endif

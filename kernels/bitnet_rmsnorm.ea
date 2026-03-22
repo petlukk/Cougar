@@ -1,0 +1,54 @@
+// bitnet_rmsnorm.ea — RMS normalization with learned weight
+//
+// out[i] = x[i] * weight[i] / sqrt(mean(x^2) + eps)
+// Two-pass: sum-of-squares reduction, then scaled multiply.
+
+#[cfg(x86_64)]
+
+export func rmsnorm_f32(
+    x: *restrict f32,
+    weight: *restrict f32,
+    out: *mut f32,
+    n: i32,
+    eps: f32
+) {
+    // Pass 1: sum of squares via dual f32x8 accumulators
+    let mut acc0: f32x8 = splat(0.0)
+    let mut acc1: f32x8 = splat(0.0)
+    let mut i: i32 = 0
+    while i + 16 <= n {
+        let v0: f32x8 = load(x, i)
+        let v1: f32x8 = load(x, i + 8)
+        acc0 = fma(v0, v0, acc0)
+        acc1 = fma(v1, v1, acc1)
+        i = i + 16
+    }
+    while i + 8 <= n {
+        let v: f32x8 = load(x, i)
+        acc0 = fma(v, v, acc0)
+        i = i + 8
+    }
+    let mut sumsq: f32 = reduce_add(acc0 .+ acc1)
+    while i < n {
+        sumsq = sumsq + x[i] * x[i]
+        i = i + 1
+    }
+
+    // inv_rms = 1.0 / sqrt(sumsq / n + eps)
+    let mean_sq: f32 = sumsq / to_f32(n) + eps
+    let inv_rms: f32 = 1.0 / sqrt(mean_sq)
+
+    // Pass 2: out[i] = x[i] * weight[i] * inv_rms
+    let v_inv: f32x8 = splat(inv_rms)
+    i = 0
+    while i + 8 <= n {
+        let vx: f32x8 = load(x, i)
+        let vw: f32x8 = load(weight, i)
+        store(out, i, vx .* vw .* v_inv)
+        i = i + 8
+    }
+    while i < n {
+        out[i] = x[i] * weight[i] * inv_rms
+        i = i + 1
+    }
+}
