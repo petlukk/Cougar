@@ -44,7 +44,8 @@ pub(crate) fn f32_matmul_mt(
 ) {
     use std::thread;
     let n_threads = thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
-    let chunk = (vocab_size + n_threads - 1) / n_threads;
+    // Align chunks to 4 for tiled kernel
+    let chunk = ((vocab_size + n_threads - 1) / n_threads + 3) & !3;
     let embed_ptr = embed.as_ptr() as usize;
     let x_ptr = x.as_ptr() as usize;
     let out_ptr = out.as_mut_ptr() as usize;
@@ -53,23 +54,13 @@ pub(crate) fn f32_matmul_mt(
             let start = t * chunk;
             let end = (start + chunk).min(vocab_size);
             if start >= end { continue; }
+            let count = end - start;
             s.spawn(move || {
-                let embed = unsafe { std::slice::from_raw_parts((embed_ptr as *const f32).add(start * hidden_dim), (end - start) * hidden_dim) };
-                let x = unsafe { std::slice::from_raw_parts(x_ptr as *const f32, hidden_dim) };
-                let out = unsafe { std::slice::from_raw_parts_mut((out_ptr as *mut f32).add(start), end - start) };
-                for v in 0..(end - start) {
-                    let row = &embed[v * hidden_dim..(v + 1) * hidden_dim];
-                    let mut dot = 0.0f32;
-                    let mut j = 0;
-                    while j + 4 <= hidden_dim {
-                        dot += row[j] * x[j] + row[j+1] * x[j+1] + row[j+2] * x[j+2] + row[j+3] * x[j+3];
-                        j += 4;
-                    }
-                    while j < hidden_dim {
-                        dot += row[j] * x[j];
-                        j += 1;
-                    }
-                    out[v] = dot;
+                let rows = (embed_ptr as *const f32).wrapping_add(start * hidden_dim);
+                let x = x_ptr as *const f32;
+                let out = (out_ptr as *mut f32).wrapping_add(start);
+                unsafe {
+                    ffi::tiled_dot_4row(x, rows, out, hidden_dim as i32, count as i32);
                 }
             });
         }

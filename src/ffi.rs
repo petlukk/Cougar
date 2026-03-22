@@ -68,6 +68,14 @@ extern "C" {
     );
 }
 
+#[link(name = "bitnet_output")]
+extern "C" {
+    pub fn tiled_dot_4row(
+        x: *const f32, rows: *const f32, out: *mut f32,
+        dim: i32, n_rows: i32,
+    );
+}
+
 #[link(name = "bitnet_activate")]
 extern "C" {
     pub fn squared_relu_mul_f32(gate: *const f32, up: *const f32, out: *mut f32, n: i32);

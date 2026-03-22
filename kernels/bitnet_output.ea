@@ -1,0 +1,121 @@
+// bitnet_output.ea — Tiled f32 matrix-vector product for output projection
+//
+// Computes out[r] = dot(x, rows[r]) for all rows, 4 rows at a time.
+// x stays in registers while 4 row streams flow through.
+// Pattern: batch_dot with 4-row tiling + dual f32x8 accumulators per row.
+
+#[cfg(x86_64)]
+
+// 4-row tiled dot product: x[dim] against rows[n_rows * dim], row-major
+// Processes 4 rows simultaneously, keeping x in registers.
+export func tiled_dot_4row(
+    x: *restrict f32,
+    rows: *restrict f32,
+    out: *mut f32,
+    dim: i32,
+    n_rows: i32
+) {
+    let mut r: i32 = 0
+
+    // Main loop: 4 rows at a time
+    while r + 4 <= n_rows {
+        let b0: i32 = r * dim
+        let b1: i32 = (r + 1) * dim
+        let b2: i32 = (r + 2) * dim
+        let b3: i32 = (r + 3) * dim
+
+        let mut a0_0: f32x8 = splat(0.0)
+        let mut a0_1: f32x8 = splat(0.0)
+        let mut a1_0: f32x8 = splat(0.0)
+        let mut a1_1: f32x8 = splat(0.0)
+        let mut a2_0: f32x8 = splat(0.0)
+        let mut a2_1: f32x8 = splat(0.0)
+        let mut a3_0: f32x8 = splat(0.0)
+        let mut a3_1: f32x8 = splat(0.0)
+
+        let mut d: i32 = 0
+        while d + 16 <= dim {
+            let x0: f32x8 = load(x, d)
+            let x1: f32x8 = load(x, d + 8)
+            let r00: f32x8 = load(rows, b0 + d)
+            let r01: f32x8 = load(rows, b0 + d + 8)
+            let r10: f32x8 = load(rows, b1 + d)
+            let r11: f32x8 = load(rows, b1 + d + 8)
+            let r20: f32x8 = load(rows, b2 + d)
+            let r21: f32x8 = load(rows, b2 + d + 8)
+            let r30: f32x8 = load(rows, b3 + d)
+            let r31: f32x8 = load(rows, b3 + d + 8)
+            a0_0 = fma(x0, r00, a0_0)
+            a0_1 = fma(x1, r01, a0_1)
+            a1_0 = fma(x0, r10, a1_0)
+            a1_1 = fma(x1, r11, a1_1)
+            a2_0 = fma(x0, r20, a2_0)
+            a2_1 = fma(x1, r21, a2_1)
+            a3_0 = fma(x0, r30, a3_0)
+            a3_1 = fma(x1, r31, a3_1)
+            d = d + 16
+        }
+        while d + 8 <= dim {
+            let xv: f32x8 = load(x, d)
+            let rv0: f32x8 = load(rows, b0 + d)
+            let rv1: f32x8 = load(rows, b1 + d)
+            let rv2: f32x8 = load(rows, b2 + d)
+            let rv3: f32x8 = load(rows, b3 + d)
+            a0_0 = fma(xv, rv0, a0_0)
+            a1_0 = fma(xv, rv1, a1_0)
+            a2_0 = fma(xv, rv2, a2_0)
+            a3_0 = fma(xv, rv3, a3_0)
+            d = d + 8
+        }
+
+        let mut d0: f32 = reduce_add(a0_0 .+ a0_1)
+        let mut d1: f32 = reduce_add(a1_0 .+ a1_1)
+        let mut d2: f32 = reduce_add(a2_0 .+ a2_1)
+        let mut d3: f32 = reduce_add(a3_0 .+ a3_1)
+
+        while d < dim {
+            let xv: f32 = x[d]
+            d0 = d0 + xv * rows[b0 + d]
+            d1 = d1 + xv * rows[b1 + d]
+            d2 = d2 + xv * rows[b2 + d]
+            d3 = d3 + xv * rows[b3 + d]
+            d = d + 1
+        }
+
+        out[r] = d0
+        out[r + 1] = d1
+        out[r + 2] = d2
+        out[r + 3] = d3
+        r = r + 4
+    }
+
+    // Tail: remaining rows (1-3)
+    while r < n_rows {
+        let base: i32 = r * dim
+        let mut acc0: f32x8 = splat(0.0)
+        let mut acc1: f32x8 = splat(0.0)
+        let mut d: i32 = 0
+        while d + 16 <= dim {
+            let xv0: f32x8 = load(x, d)
+            let xv1: f32x8 = load(x, d + 8)
+            let rv0: f32x8 = load(rows, base + d)
+            let rv1: f32x8 = load(rows, base + d + 8)
+            acc0 = fma(xv0, rv0, acc0)
+            acc1 = fma(xv1, rv1, acc1)
+            d = d + 16
+        }
+        while d + 8 <= dim {
+            let xv: f32x8 = load(x, d)
+            let rv: f32x8 = load(rows, base + d)
+            acc0 = fma(xv, rv, acc0)
+            d = d + 8
+        }
+        let mut dot: f32 = reduce_add(acc0 .+ acc1)
+        while d < dim {
+            dot = dot + x[d] * rows[base + d]
+            d = d + 1
+        }
+        out[r] = dot
+        r = r + 1
+    }
+}

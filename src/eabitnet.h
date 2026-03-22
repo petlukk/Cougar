@@ -54,6 +54,10 @@ void squared_relu_mul_f32(const float *gate, const float *up, float *out, int32_
 void fused_attention_f32(const float *q, const float *k_cache, const float *v_cache,
                          float *out, int32_t head_dim, int32_t seq_len, float scale);
 
+// Tiled 4-row f32 dot product for output projection
+void tiled_dot_4row(const float *x, const float *rows, float *out,
+                    int32_t dim, int32_t n_rows);
+
 #ifdef __cplusplus
 }
 #endif
