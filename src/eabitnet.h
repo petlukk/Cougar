@@ -47,6 +47,9 @@ void attn_scores_f32(const float *q, const float *k_cache, float *out,
 void attn_weighted_sum_f32(const float *scores, const float *v_cache, float *out,
                            int32_t head_dim, int32_t seq_len);
 
+// Squared ReLU fused: out[i] = max(0, gate[i])^2 * up[i]
+void squared_relu_mul_f32(const float *gate, const float *up, float *out, int32_t n);
+
 #ifdef __cplusplus
 }
 #endif

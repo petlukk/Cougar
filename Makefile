@@ -20,6 +20,7 @@ test: kernels
 	$(CC) $(CFLAGS) tests/test_softmax.c -L$(LIB) -lbitnet_softmax -o $(BUILD)/test_softmax -lm
 	$(CC) $(CFLAGS) tests/test_rope.c -L$(LIB) -lbitnet_rope -o $(BUILD)/test_rope -lm
 	$(CC) $(CFLAGS) tests/test_attention.c -L$(LIB) -lbitnet_attention -o $(BUILD)/test_attention -lm
+	$(CC) $(CFLAGS) tests/test_activate.c -L$(LIB) -lbitnet_activate -o $(BUILD)/test_activate -lm
 	LD_LIBRARY_PATH=$(LIB) $(BUILD)/test_i2s
 	LD_LIBRARY_PATH=$(LIB) $(BUILD)/test_quant
 	LD_LIBRARY_PATH=$(LIB) $(BUILD)/test_lut
@@ -28,6 +29,7 @@ test: kernels
 	LD_LIBRARY_PATH=$(LIB) $(BUILD)/test_softmax
 	LD_LIBRARY_PATH=$(LIB) $(BUILD)/test_rope
 	LD_LIBRARY_PATH=$(LIB) $(BUILD)/test_attention
+	LD_LIBRARY_PATH=$(LIB) $(BUILD)/test_activate
 
 clean:
 	rm -rf $(BUILD)
