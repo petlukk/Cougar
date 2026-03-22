@@ -139,3 +139,29 @@ RUSTFLAGS="-L build/lib" cargo build --release
 make test                                 # 102 kernel tests
 RUSTFLAGS="-L build/lib" cargo test       # 16 Rust tests
 ```
+
+### Linking note
+
+The Ea kernels compile to shared libraries (`.so` files) in `build/lib/`. Both the Rust compiler and the runtime need to find them:
+
+```bash
+# At compile time — tell rustc where to find the .so files
+RUSTFLAGS="-L build/lib" cargo build --release
+
+# At runtime — tell the dynamic linker where to find them
+LD_LIBRARY_PATH=build/lib ./target/release/eabitnet --model ...
+```
+
+To avoid typing `LD_LIBRARY_PATH` every time, add the full path to your shell profile:
+
+```bash
+# Add to ~/.bashrc or ~/.zshrc
+export LD_LIBRARY_PATH="$HOME/projects/eabitnet/build/lib:$LD_LIBRARY_PATH"
+```
+
+Or install the libraries system-wide:
+
+```bash
+sudo cp build/lib/*.so /usr/local/lib/
+sudo ldconfig
+```
