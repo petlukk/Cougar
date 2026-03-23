@@ -10,9 +10,9 @@
 
 Llama.cpp is a beast, but even beasts have predators. 🐾
 
-A ~3,000-line BitNet b1.58 engine written in Rust + [Eä](https://github.com/petlukk/eacompute) SIMD kernels. No llama.cpp. No dependencies.
+A ~3,300-line BitNet b1.58 engine written in Rust + [Eä](https://github.com/petlukk/eacompute) SIMD kernels. No llama.cpp. No dependencies.
 
-🚀 **17.4 tok/s** (AVX2 / 16 threads) · 📦 **644 KB** binary · 🚫 Zero dependencies
+🚀 **18.8 tok/s** (AVX2 / 16 threads) · 📦 **644 KB** binary · 🚫 Zero dependencies
 
 It doesn't just run models. It hunts them.
 
@@ -47,9 +47,9 @@ BitNet b1.58 2B-4T (30 layers, 2560 hidden, 20 heads, 128K vocab) on x86-64:
 
 | Metric | Value |
 |--------|-------|
-| Decode throughput | **17.4 tok/s** |
-| Decode latency | **57.6 ms/tok** |
-| Prefill throughput | 17.1 tok/s |
+| Decode throughput | **18.8 tok/s** |
+| Decode latency | **53.3 ms/tok** |
+| Prefill throughput | 17.6 tok/s |
 | Threads | 16 |
 | Binary size | 644 KB |
 | Model RSS | ~2.0 GB |
@@ -63,46 +63,41 @@ BitNet b1.58 2B-4T (30 layers, 2560 hidden, 20 heads, 128K vocab) on x86-64:
  6.5 tok/s  +parallel K/V, gate/up pairs
  7.4 tok/s  +concurrent Q+K+V
 10.0 tok/s  +i8 quantized output projection
-17.4 tok/s  +persistent thread pool (beats bitnet.cpp 15.05)
+18.8 tok/s  +persistent thread pool (beats bitnet.cpp 15.05)
 ```
 
-### Per-stage profile (57.6ms/tok)
+### Per-stage profile (53.3ms/tok)
 
 ```
-FFN gate+up:  19.6ms (37%)   2x ternary matmul, parallel pair
-output (i8):  11.7ms (22%)   i8 quantized embedding projection
-FFN down:      9.7ms (18%)   1x ternary matmul
-QKV:           6.7ms (13%)   concurrent Q+K+V via run_split3
-O proj:        5.2ms (10%)   1x ternary matmul
+FFN gate+up:  18.4ms (35%)   2x ternary matmul, parallel pair
+output (i8):  12.1ms (23%)   i8 quantized embedding projection
+FFN down:      9.1ms (17%)   1x ternary matmul
+QKV:           7.0ms (13%)   concurrent Q+K+V via run_split3
+O proj:        5.1ms (10%)   1x ternary matmul
 attention:     0.2ms          fused online softmax
 ```
 
 ## Kernels
 
-13 Ea kernels, 1248 lines total:
+8 Ea kernels, 680 lines total:
 
 | Kernel | Lines | What |
 |--------|------:|------|
 | `bitnet_i2s.ea` | 145 | Ternary matmul (x86 AVX2) |
 | `bitnet_i2s_arm.ea` | 145 | Ternary matmul (ARM NEON) |
 | `bitnet_fused_attn.ea` | 120 | Single-pass online softmax attention |
-| `bitnet_output.ea` | 121 | Tiled 4-row f32 dot (FMA) |
 | `bitnet_quant.ea` | 105 | f32->i8 quantization + activation sum |
-| `bitnet_softmax.ea` | 85 | Numerically stable softmax |
-| `bitnet_attention.ea` | 86 | 3-pass attention (legacy) |
 | `bitnet_i8dot.ea` | 62 | i8xu8 dot for quantized output |
 | `bitnet_rmsnorm.ea` | 54 | RMS normalization |
-| `bitnet_rope.ea` | 41 | Rotary position encoding |
 | `bitnet_activate.ea` | 32 | Squared ReLU x up (fused) |
 | `bitnet_vecadd.ea` | 17 | Residual vector add |
-| `bitnet_lut.ea` | 235 | LUT matmul (unused) |
 
 ## Architecture
 
 ```
 cougar/
-  kernels/    13 Ea kernels (.ea -> .so via eacompute)
-  src/        8 Rust modules (gguf, tokenizer, model, forward, matmul, threadpool, ffi, main)
+  kernels/    8 Ea kernels (.ea -> .so via eacompute)
+  src/        8 Rust modules + test files
   tests/      13 C test harnesses (118 tests)
 ```
 
