@@ -3,6 +3,7 @@ mod forward;
 mod gguf;
 mod matmul;
 mod model;
+mod threadpool;
 mod tokenizer;
 
 use forward::InferenceState;
