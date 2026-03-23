@@ -325,3 +325,99 @@ pub(crate) fn ternary_matmul_parallel_pair(
         total - half, make_work(w_b as usize, out_b.as_mut_ptr() as usize, scale_b),
     );
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── f16_to_f32 ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn f16_one() {
+        // 0x3C00 = 1.0
+        assert_eq!(f16_to_f32(0x3C00), 1.0f32);
+    }
+
+    #[test]
+    fn f16_two() {
+        // 0x4000 = 2.0
+        assert_eq!(f16_to_f32(0x4000), 2.0f32);
+    }
+
+    #[test]
+    fn f16_neg_one() {
+        // 0xBC00 = -1.0
+        assert_eq!(f16_to_f32(0xBC00), -1.0f32);
+    }
+
+    #[test]
+    fn f16_pos_zero() {
+        // 0x0000 = +0.0
+        let v = f16_to_f32(0x0000);
+        assert_eq!(v, 0.0f32);
+        assert!(v.is_sign_positive());
+    }
+
+    #[test]
+    fn f16_neg_zero() {
+        // 0x8000 = -0.0
+        let v = f16_to_f32(0x8000);
+        assert_eq!(v, 0.0f32);
+        assert!(v.is_sign_negative());
+    }
+
+    #[test]
+    fn f16_max_normal() {
+        // 0x7BFF = 65504.0 (max normal f16)
+        assert_eq!(f16_to_f32(0x7BFF), 65504.0f32);
+    }
+
+    #[test]
+    fn f16_smallest_normal() {
+        // 0x0400 = 2^-14 ≈ 6.103515625e-5
+        let expected = 2.0f32.powi(-14);
+        let got = f16_to_f32(0x0400);
+        assert!((got - expected).abs() < 1e-10, "got {got}, expected {expected}");
+    }
+
+    #[test]
+    fn f16_smallest_subnormal() {
+        // 0x0001 = 2^-24 ≈ 5.960464e-8
+        let expected = 2.0f32.powi(-24);
+        let got = f16_to_f32(0x0001);
+        assert!((got - expected).abs() < 1e-30, "got {got}, expected {expected}");
+    }
+
+    // ── embed_f16_lookup ───────────────────────────────────────────────────
+
+    #[test]
+    fn embed_f16_lookup_basic() {
+        // Build a fake embedding table: 3 tokens × 4 dims
+        // Encoded as u16 (f16) values, stored as raw bytes.
+        // Token 1: [1.0, 2.0, -1.0, 0.0] → [0x3C00, 0x4000, 0xBC00, 0x0000]
+        let token1: [u16; 4] = [0x3C00, 0x4000, 0xBC00, 0x0000];
+        let token0: [u16; 4] = [0x0000; 4];
+        let token2: [u16; 4] = [0x7BFF, 0x0400, 0x0001, 0x8000];
+
+        // Lay out as bytes: token0, token1, token2
+        let mut raw_bytes = Vec::with_capacity(3 * 4 * 2);
+        for &v in token0.iter().chain(token1.iter()).chain(token2.iter()) {
+            raw_bytes.extend_from_slice(&v.to_ne_bytes());
+        }
+
+        let hidden_dim = 4usize;
+        let mut out = vec![0.0f32; hidden_dim];
+
+        embed_f16_lookup(raw_bytes.as_ptr(), 1, &mut out, hidden_dim);
+
+        assert_eq!(out[0], 1.0f32,  "dim 0 should be 1.0");
+        assert_eq!(out[1], 2.0f32,  "dim 1 should be 2.0");
+        assert_eq!(out[2], -1.0f32, "dim 2 should be -1.0");
+        assert_eq!(out[3], 0.0f32,  "dim 3 should be 0.0");
+
+        // Also verify token 2
+        embed_f16_lookup(raw_bytes.as_ptr(), 2, &mut out, hidden_dim);
+        assert_eq!(out[0], 65504.0f32, "dim 0 of token 2 should be 65504");
+        assert!((out[1] - 2.0f32.powi(-14)).abs() < 1e-10, "dim 1 of token 2 should be 2^-14");
+    }
+}
