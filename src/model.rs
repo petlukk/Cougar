@@ -16,7 +16,6 @@ pub struct BitNetModel {
 
     pub layers: Vec<LayerWeights>,
     pub embed_weight_f16: *const u8,
-    pub embed_weight_f32: Vec<f32>,
     pub embed_weight_i8: Vec<u8>,       // per-row quantized (u8 = i8 + 128 bias)
     pub embed_row_scales: Vec<f32>,     // per-row absmax scale
     pub norm_weight: *const f32,
@@ -150,40 +149,35 @@ impl BitNetModel {
         let embed_weight_f16: *const u8 = tensor_ptr(gguf, "token_embd.weight")?;
         let norm_weight: *const f32 = tensor_ptr(gguf, "output_norm.weight")?;
 
-        // Pre-convert F16 embedding to F32 for fast output matmul
+        // Quantize embedding rows to i8 (per-row absmax) + u8 bias for output projection
         let embed_data = gguf.tensor_data("token_embd.weight")
             .ok_or("missing tensor: token_embd.weight")?;
         let n_f16 = vocab_size * hidden_dim;
         let embed_f16 = unsafe { std::slice::from_raw_parts(embed_data.as_ptr() as *const u16, n_f16) };
-        let mut embed_weight_f32 = Vec::with_capacity(n_f16);
-        for &h in embed_f16 {
+        let f16_to_f32 = |h: u16| -> f32 {
             let sign = ((h >> 15) & 1) as u32;
             let exp = ((h >> 10) & 0x1f) as u32;
             let frac = (h & 0x3ff) as u32;
-            let f = if exp == 0 {
-                if frac == 0 { 0.0f32 } else {
-                    // Subnormal
-                    let mut e = 0i32;
-                    let mut fr = frac;
-                    while fr & 0x400 == 0 { fr <<= 1; e -= 1; }
-                    fr &= 0x3ff;
-                    f32::from_bits((sign << 31) | (((127 - 15 + 1 + e) as u32) << 23) | (fr << 13))
-                }
-            } else if exp == 31 {
-                f32::from_bits((sign << 31) | (0xff << 23) | (frac << 13))
-            } else {
-                f32::from_bits((sign << 31) | ((exp + 127 - 15) << 23) | (frac << 13))
-            };
-            embed_weight_f32.push(f);
-        }
-        // Quantize embedding rows to i8 (per-row absmax) + u8 bias for output projection
+            if exp == 0 {
+                if frac == 0 { return f32::from_bits(sign << 31); }
+                let mut e = 0i32;
+                let mut fr = frac;
+                while fr & 0x400 == 0 { fr <<= 1; e -= 1; }
+                fr &= 0x3ff;
+                return f32::from_bits((sign << 31) | (((127 - 15 + 1 + e) as u32) << 23) | (fr << 13));
+            }
+            if exp == 31 {
+                return f32::from_bits((sign << 31) | (0xff << 23) | (frac << 13));
+            }
+            f32::from_bits((sign << 31) | ((exp + 127 - 15) << 23) | (frac << 13))
+        };
         let mut embed_weight_i8 = Vec::with_capacity(n_f16);
         let mut embed_row_scales = Vec::with_capacity(vocab_size);
         for row in 0..vocab_size {
             let base = row * hidden_dim;
             let mut amax = 0.0f32;
             for d in 0..hidden_dim {
-                let v = embed_weight_f32[base + d].abs();
+                let v = f16_to_f32(embed_f16[base + d]).abs();
                 if v > amax { amax = v; }
             }
             embed_row_scales.push(amax);
@@ -192,14 +186,13 @@ impl BitNetModel {
             } else {
                 let inv = 127.0 / amax;
                 for d in 0..hidden_dim {
-                    let q = (embed_weight_f32[base + d] * inv).round().clamp(-127.0, 127.0) as i8;
+                    let q = (f16_to_f32(embed_f16[base + d]) * inv).round().clamp(-127.0, 127.0) as i8;
                     embed_weight_i8.push((q as i16 + 128) as u8);
                 }
             }
         }
-        eprintln!("  Embedding: {} vocab × {} dim, f32 ({:.0} MB) + i8 ({:.0} MB)",
+        eprintln!("  Embedding: {} vocab × {} dim, i8 ({:.0} MB)",
             vocab_size, hidden_dim,
-            n_f16 as f64 * 4.0 / 1e6,
             embed_weight_i8.len() as f64 / 1e6);
 
         let mut layers = Vec::with_capacity(n_layers);
@@ -237,7 +230,6 @@ impl BitNetModel {
             rms_eps,
             layers,
             embed_weight_f16,
-            embed_weight_f32,
             embed_weight_i8,
             embed_row_scales,
             norm_weight,

@@ -110,65 +110,6 @@ pub(crate) fn i8_output_matmul_mt(
     });
 }
 
-#[allow(dead_code)]
-pub(crate) fn f32_matmul_mt(
-    embed: &[f32], x: &[f32], out: &mut [f32], vocab_size: usize, hidden_dim: usize,
-    pool: &ThreadPool,
-) {
-    let embed_ptr = embed.as_ptr() as usize;
-    let x_ptr = x.as_ptr() as usize;
-    let out_ptr = out.as_mut_ptr() as usize;
-    pool.run(pool.thread_count(), |tid, n_threads| {
-        // Align chunks to 4 for tiled kernel
-        let chunk = ((vocab_size + n_threads - 1) / n_threads + 3) & !3;
-        let start = tid * chunk;
-        let end = (start + chunk).min(vocab_size);
-        if start >= end { return; }
-        let count = end - start;
-        let rows = (embed_ptr as *const f32).wrapping_add(start * hidden_dim);
-        let x = x_ptr as *const f32;
-        let out = (out_ptr as *mut f32).wrapping_add(start);
-        unsafe {
-            ffi::tiled_dot_4row(x, rows, out, hidden_dim as i32, count as i32);
-        }
-    });
-}
-
-#[allow(dead_code)]
-pub(crate) fn f16_matmul_mt(
-    embed: *const u8, x: &[f32], out: &mut [f32], vocab_size: usize, hidden_dim: usize,
-    pool: &ThreadPool,
-) {
-    let embed_ptr = embed as usize;
-    let x_ptr = x.as_ptr() as usize;
-    let out_ptr = out.as_mut_ptr() as usize;
-
-    pool.run(pool.thread_count(), |tid, n_threads| {
-        let chunk = (vocab_size + n_threads - 1) / n_threads;
-        let start = tid * chunk;
-        let end = (start + chunk).min(vocab_size);
-        if start >= end { return; }
-        let embed = embed_ptr as *const u8;
-        let x = unsafe { std::slice::from_raw_parts(x_ptr as *const f32, hidden_dim) };
-        let out = unsafe {
-            std::slice::from_raw_parts_mut((out_ptr as *mut f32).add(start), end - start)
-        };
-        for v in 0..(end - start) {
-            let row = unsafe {
-                std::slice::from_raw_parts(
-                    embed.add((start + v) * hidden_dim * 2) as *const u16,
-                    hidden_dim,
-                )
-            };
-            let mut dot = 0.0f32;
-            for d in 0..hidden_dim {
-                dot += f16_to_f32(row[d]) * x[d];
-            }
-            out[v] = dot;
-        }
-    });
-}
-
 /// Ternary matmul with configurable thread count.
 pub(crate) fn ternary_matmul_mt_n(
     weight: *const u8, act: *const i8,

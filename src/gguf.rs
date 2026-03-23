@@ -6,23 +6,22 @@ const ALIGNMENT: u64 = 32;
 #[derive(Debug, Clone)]
 pub enum MetaValue {
     U8(u8),
-    I8(i8),
+    I8,
     U16(u16),
-    I16(i16),
+    I16,
     U32(u32),
     I32(i32),
     F32(f32),
     U64(u64),
     I64(i64),
     F64(f64),
-    Bool(bool),
+    Bool,
     Str(String),
     Array(Vec<MetaValue>),
 }
 
 #[derive(Debug)]
 pub struct TensorInfo {
-    pub name: String,
     pub dims: Vec<u64>,
     pub dtype: u32,
     pub offset: u64,
@@ -126,15 +125,15 @@ fn read_string(buf: &[u8], pos: usize) -> Result<(String, usize), String> {
 fn read_meta_value(buf: &[u8], pos: usize, vtype: u32) -> Result<(MetaValue, usize), String> {
     match vtype {
         0 => { let (v, p) = read_u8(buf, pos)?; Ok((MetaValue::U8(v), p)) }
-        1 => { let (v, p) = read_i8(buf, pos)?; Ok((MetaValue::I8(v), p)) }
+        1 => { let (_v, p) = read_i8(buf, pos)?; Ok((MetaValue::I8, p)) }
         2 => { let (v, p) = read_u16(buf, pos)?; Ok((MetaValue::U16(v), p)) }
-        3 => { let (v, p) = read_i16(buf, pos)?; Ok((MetaValue::I16(v), p)) }
+        3 => { let (_v, p) = read_i16(buf, pos)?; Ok((MetaValue::I16, p)) }
         4 => { let (v, p) = read_u32(buf, pos)?; Ok((MetaValue::U32(v), p)) }
         5 => { let (v, p) = read_i32(buf, pos)?; Ok((MetaValue::I32(v), p)) }
         6 => { let (v, p) = read_f32(buf, pos)?; Ok((MetaValue::F32(v), p)) }
         7 => {
-            let (v, p) = read_u8(buf, pos)?;
-            Ok((MetaValue::Bool(v != 0), p))
+            let (_v, p) = read_u8(buf, pos)?;
+            Ok((MetaValue::Bool, p))
         }
         8 => {
             let (s, p) = read_string(buf, pos)?;
@@ -257,8 +256,8 @@ impl GgufFile {
             }
             let (dtype, p) = read_u32(&raw, p)?;
             let (offset, p) = read_u64(&raw, p)?;
-            tensor_map.insert(name.clone(), i);
-            tensors.push(TensorInfo { name, dims, dtype, offset });
+            tensor_map.insert(name, i);
+            tensors.push(TensorInfo { dims, dtype, offset });
             pos = p;
         }
 
@@ -292,44 +291,6 @@ impl GgufFile {
         }
     }
 
-    pub fn get_f32(&self, key: &str) -> Option<f32> {
-        match self.metadata.get(key)? {
-            MetaValue::F32(v) => Some(*v),
-            _ => None,
-        }
-    }
-
-    pub fn get_str_array(&self, key: &str) -> Option<Vec<&str>> {
-        match self.metadata.get(key)? {
-            MetaValue::Array(arr) => {
-                let mut out = Vec::with_capacity(arr.len());
-                for v in arr {
-                    match v {
-                        MetaValue::Str(s) => out.push(s.as_str()),
-                        _ => return None,
-                    }
-                }
-                Some(out)
-            }
-            _ => None,
-        }
-    }
-
-    pub fn get_f32_array(&self, key: &str) -> Option<Vec<f32>> {
-        match self.metadata.get(key)? {
-            MetaValue::Array(arr) => {
-                let mut out = Vec::with_capacity(arr.len());
-                for v in arr {
-                    match v {
-                        MetaValue::F32(f) => out.push(*f),
-                        _ => return None,
-                    }
-                }
-                Some(out)
-            }
-            _ => None,
-        }
-    }
 }
 
 #[cfg(test)]
@@ -427,7 +388,6 @@ mod tests {
         std::fs::write(path, &buf).unwrap();
         let gf = GgufFile::open(path).unwrap();
         assert_eq!(gf.tensors.len(), 1);
-        assert_eq!(gf.tensors[0].name, "w");
         assert_eq!(gf.tensors[0].dims, vec![4]);
 
         let data = gf.tensor_data("w").unwrap();
@@ -448,7 +408,7 @@ mod tests {
         buf.extend_from_slice(&GGUF_MAGIC.to_le_bytes());
         buf.extend_from_slice(&3u32.to_le_bytes());
         buf.extend_from_slice(&0u64.to_le_bytes()); // n_tensors
-        buf.extend_from_slice(&3u64.to_le_bytes()); // n_kv = 3
+        buf.extend_from_slice(&1u64.to_le_bytes()); // n_kv = 1
 
         // U32 entry
         let k = b"num_heads";
@@ -457,36 +417,11 @@ mod tests {
         buf.extend_from_slice(&4u32.to_le_bytes()); // type U32
         buf.extend_from_slice(&32u32.to_le_bytes());
 
-        // F32 entry
-        let k = b"rope_freq";
-        buf.extend_from_slice(&(k.len() as u64).to_le_bytes());
-        buf.extend_from_slice(k);
-        buf.extend_from_slice(&6u32.to_le_bytes()); // type F32
-        buf.extend_from_slice(&10000.0f32.to_le_bytes());
-
-        // Array of strings
-        let k = b"vocab";
-        buf.extend_from_slice(&(k.len() as u64).to_le_bytes());
-        buf.extend_from_slice(k);
-        buf.extend_from_slice(&9u32.to_le_bytes()); // type ARRAY
-        buf.extend_from_slice(&8u32.to_le_bytes()); // elem type STRING
-        buf.extend_from_slice(&2u64.to_le_bytes()); // count = 2
-        let t = b"hello";
-        buf.extend_from_slice(&(t.len() as u64).to_le_bytes());
-        buf.extend_from_slice(t);
-        let t = b"world";
-        buf.extend_from_slice(&(t.len() as u64).to_le_bytes());
-        buf.extend_from_slice(t);
-
         let path = "/tmp/meta_types_test.gguf";
         std::fs::write(path, &buf).unwrap();
         let gf = GgufFile::open(path).unwrap();
 
         assert_eq!(gf.get_u32("num_heads"), Some(32));
-        assert_eq!(gf.get_f32("rope_freq"), Some(10000.0));
-        let vocab = gf.get_str_array("vocab").unwrap();
-        assert_eq!(vocab, vec!["hello", "world"]);
-
         assert!(gf.get_str("num_heads").is_none());
         assert!(gf.get_u32("nonexistent").is_none());
         std::fs::remove_file(path).ok();
