@@ -299,7 +299,6 @@ impl InferenceState {
         temperature: f32,
         eos_id: u32,
         max_seq_len: usize,
-        stream: bool,
     ) -> (Vec<u32>, f64, f64) {
         use std::time::Instant;
         let n_threads = std::thread::available_parallelism()
@@ -331,8 +330,6 @@ impl InferenceState {
             output.push(next);
             if step == 0 {
                 first_tok_ms = first_tok_start.elapsed().as_secs_f64() * 1000.0;
-            }
-            if stream {
             }
             state.forward(model, next, pos);
             pos += 1;
