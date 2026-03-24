@@ -13,12 +13,39 @@ use forward::InferenceState;
 use model::BitNetModel;
 use tokenizer::Tokenizer;
 
-fn main() {
-    embed::init().unwrap_or_else(|e| {
-        eprintln!("Failed to load kernels: {e}");
-        std::process::exit(1);
-    });
+const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+const USAGE: &str = "\
+Usage: cougar --model <path.gguf> [--prompt <text> | --interactive | --serve]
+
+Modes:
+  --prompt <text>         Generate from a single prompt
+  --interactive           Interactive REPL (stdin/stdout)
+  --serve                 Web chat UI with SSE streaming
+
+Options:
+  --max-tokens N          Maximum tokens to generate (default: 128)
+  --temperature T         Sampling temperature, 0 = greedy (default: 0)
+  --repetition-penalty F  Penalize repeated tokens (default: 1.1)
+  --max-seq-len N         Maximum sequence length (default: 2048)
+  --port N                Server port for --serve (default: 8080)
+  --help, -h              Show this help message
+  --version               Show version";
+
+fn die(msg: &str) -> ! {
+    eprintln!("error: {msg}");
+    std::process::exit(1);
+}
+
+fn parse_arg<T: std::str::FromStr>(args: &[String], i: &mut usize, flag: &str) -> T {
+    *i += 1;
+    if *i >= args.len() {
+        die(&format!("{flag} requires a value"));
+    }
+    args[*i].parse().unwrap_or_else(|_| die(&format!("{flag}: invalid value '{}'", args[*i])))
+}
+
+fn main() {
     let args: Vec<String> = std::env::args().collect();
 
     let mut model_path = None;
@@ -34,74 +61,57 @@ fn main() {
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
-            "--model" => {
-                i += 1;
-                model_path = Some(args[i].as_str());
+            "--help" | "-h" => {
+                println!("{USAGE}");
+                return;
             }
-            "--prompt" => {
-                i += 1;
-                prompt = Some(args[i].as_str());
+            "--version" => {
+                println!("cougar {VERSION}");
+                return;
             }
-            "--max-tokens" => {
-                i += 1;
-                max_tokens = args[i].parse().expect("invalid --max-tokens");
-            }
-            "--temperature" => {
-                i += 1;
-                temperature = args[i].parse().expect("invalid --temperature");
-            }
-            "--repetition-penalty" => {
-                i += 1;
-                repetition_penalty = args[i].parse().expect("invalid --repetition-penalty");
-            }
-            "--max-seq-len" => {
-                i += 1;
-                max_seq_len = args[i].parse().expect("invalid --max-seq-len");
-            }
-            "--interactive" => {
-                interactive = true;
-            }
-            "--serve" => {
-                serve = true;
-            }
-            "--port" => {
-                i += 1;
-                port = args[i].parse().expect("invalid --port");
-            }
-            other => {
-                eprintln!("Unknown argument: {other}");
-                std::process::exit(1);
-            }
+            "--model" => { i += 1; model_path = Some(args[i].clone()); }
+            "--prompt" => { i += 1; prompt = Some(args[i].clone()); }
+            "--max-tokens" => { max_tokens = parse_arg(&args, &mut i, "--max-tokens"); }
+            "--temperature" => { temperature = parse_arg(&args, &mut i, "--temperature"); }
+            "--repetition-penalty" => { repetition_penalty = parse_arg(&args, &mut i, "--repetition-penalty"); }
+            "--max-seq-len" => { max_seq_len = parse_arg(&args, &mut i, "--max-seq-len"); }
+            "--port" => { port = parse_arg(&args, &mut i, "--port"); }
+            "--interactive" => { interactive = true; }
+            "--serve" => { serve = true; }
+            other => die(&format!("unknown argument: {other}\n\nRun 'cougar --help' for usage.")),
         }
         i += 1;
     }
 
+    // Default model path: ~/.cougar/models/ggml-model-i2_s.gguf
     let model_path = model_path.unwrap_or_else(|| {
-        eprintln!("Usage: cougar --model <path.gguf> [--prompt <text> | --interactive | --serve] [--port P] [--max-tokens N] [--temperature T] [--repetition-penalty F]");
-        std::process::exit(1);
+        let default = format!(
+            "{}/.cougar/models/ggml-model-i2_s.gguf",
+            std::env::var("HOME").unwrap_or_default()
+        );
+        if std::path::Path::new(&default).exists() {
+            eprintln!("cougar> using default model: {default}");
+            default
+        } else {
+            eprintln!("{USAGE}");
+            die("--model is required (no default model found at ~/.cougar/models/ggml-model-i2_s.gguf)");
+        }
     });
+
     if !interactive && !serve && prompt.is_none() {
-        eprintln!("Usage: cougar --model <path.gguf> [--prompt <text> | --interactive | --serve]");
-        std::process::exit(1);
+        eprintln!("{USAGE}");
+        die("one of --prompt, --interactive, or --serve is required");
     }
 
-    let gguf = match gguf::GgufFile::open(model_path) {
+    embed::init().unwrap_or_else(|e| die(&format!("failed to load kernels: {e}")));
+
+    let gguf = match gguf::GgufFile::open(&model_path) {
         Ok(gf) => gf,
-        Err(e) => {
-            eprintln!("Failed to open GGUF: {e}");
-            std::process::exit(1);
-        }
+        Err(e) => die(&format!("failed to open GGUF '{}': {e}", model_path)),
     };
 
-    let tokenizer = Tokenizer::from_gguf(&gguf).unwrap_or_else(|e| {
-        eprintln!("Failed to build tokenizer: {e}");
-        std::process::exit(1);
-    });
-
-    let model = BitNetModel::from_gguf(&gguf).unwrap_or_else(|e| {
-        eprintln!("Failed to load model: {e}");
-        std::process::exit(1);
-    });
+    let tokenizer = Tokenizer::from_gguf(&gguf).unwrap_or_else(|e| die(&format!("tokenizer: {e}")));
+    let model = BitNetModel::from_gguf(&gguf).unwrap_or_else(|e| die(&format!("model: {e}")));
 
     eprintln!(
         "cougar> {} layers, {}d, {} heads, {} vocab",
@@ -119,8 +129,12 @@ fn main() {
     }
 
     let prompt_text = prompt.unwrap();
+    if prompt_text.is_empty() {
+        die("--prompt cannot be empty");
+    }
+
     let mut tokens = vec![tokenizer.bos_id];
-    tokens.extend(tokenizer.encode(prompt_text));
+    tokens.extend(tokenizer.encode(&prompt_text));
     eprintln!("cougar> prompt: {} tokens", tokens.len());
 
     let (output, _prefill_ms, _decode_ms) = InferenceState::generate(

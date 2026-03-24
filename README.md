@@ -19,8 +19,8 @@ It doesn't just run models. It hunts them.
 ## Quick start
 
 ```bash
-# Build kernels (needs eacompute compiler)
-make kernels
+# Build kernels (needs eacompute compiler — set EA to point at the binary)
+EA=/path/to/eacompute/target/release/ea make kernels
 
 # Build (kernels embedded in binary — no LD_LIBRARY_PATH needed)
 cargo build --release
@@ -49,7 +49,9 @@ Loads a BitNet b1.58 2B-4T GGUF file and generates text. The entire inference pi
 
 ## Performance
 
-BitNet b1.58 2B-4T (30 layers, 2560 hidden, 20 heads, 128K vocab) on x86-64:
+BitNet b1.58 2B-4T (30 layers, 2560 hidden, 20 heads, 128K vocab) on native x86-64 Linux:
+
+> **Note:** Performance depends on core count and platform. WSL2 adds ~2-3x overhead vs native Linux. The numbers below are from 16 threads on bare-metal.
 
 | Metric | Value |
 |--------|-------|
