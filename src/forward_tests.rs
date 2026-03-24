@@ -25,6 +25,10 @@ fn mock_model(hidden_dim: usize, n_layers: usize, n_heads: usize, vocab_size: us
         embed_row_scales: Vec::new(),
         norm_weight: std::ptr::null(),
         _weight_data: Vec::new(),
+        q4k_layers: Vec::new(),
+        output_weight: std::ptr::null(),
+        output_n_blocks: 0,
+        embed_dtype: 1,
     }
 }
 

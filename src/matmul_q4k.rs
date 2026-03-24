@@ -252,6 +252,45 @@ pub(crate) fn q4k_matmul_mt(
     });
 }
 
+/// Dequantize a single embedding row from Q4_K block data to f32.
+///
+/// Each row is `n_blocks` consecutive 144-byte Q4_K super-blocks (256 elements each).
+/// The row for `token` starts at `embed_data + token * n_blocks * 144`.
+pub(crate) fn q4k_embed_lookup(
+    embed_data: *const u8,
+    token: u32,
+    out: &mut [f32],
+    hidden_dim: usize,
+) {
+    let n_blocks = hidden_dim / 256;
+    let row_bytes = n_blocks * Q4K_BLOCK_BYTES;
+    let row_ptr = unsafe { embed_data.add(token as usize * row_bytes) };
+
+    let mut scales = [0u8; 8];
+    let mut mins = [0u8; 8];
+
+    for blk in 0..n_blocks {
+        let block = unsafe { row_ptr.add(blk * Q4K_BLOCK_BYTES) };
+        let d = f16_to_f32(unsafe { *(block as *const u16) });
+        let dmin = f16_to_f32(unsafe { *(block.add(2) as *const u16) });
+        let scales_raw = unsafe { std::slice::from_raw_parts(block.add(4), 12) };
+        unpack_q4k_scales(scales_raw, &mut scales, &mut mins);
+        let qs = unsafe { block.add(16) };
+
+        for j in 0..4 {
+            let d1 = d * scales[2 * j] as f32;
+            let m1 = dmin * mins[2 * j] as f32;
+            let d2 = d * scales[2 * j + 1] as f32;
+            let m2 = dmin * mins[2 * j + 1] as f32;
+            for k in 0..32 {
+                let byte = unsafe { *qs.add(j * 32 + k) };
+                out[blk * 256 + j * 64 + k] = d1 * (byte & 0xF) as f32 - m1;
+                out[blk * 256 + j * 64 + 32 + k] = d2 * (byte >> 4) as f32 - m2;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 #[path = "matmul_q4k_tests.rs"]
 mod tests;

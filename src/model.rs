@@ -30,6 +30,32 @@ pub struct BitNetModel {
     pub norm_weight: *const f32,
     /// Owned repacked I2_S weight data (keeps pointers valid)
     pub(crate) _weight_data: Vec<Vec<u8>>,
+
+    // Q4K fields (empty for I2S models)
+    pub q4k_layers: Vec<Q4KLayerWeights>,
+    pub output_weight: *const u8,
+    pub output_n_blocks: usize,
+    /// Embed tensor dtype (12 = Q4_K, 1 = F16, etc.)
+    pub embed_dtype: u32,
+}
+
+pub struct Q4KLayerWeights {
+    pub attn_norm: *const f32,
+    pub wq: *const u8,
+    pub wq_n_blocks: usize,
+    pub wk: *const u8,
+    pub wk_n_blocks: usize,
+    pub wv: *const u8,
+    pub wv_n_blocks: usize,
+    pub wo: *const u8,
+    pub wo_n_blocks: usize,
+    pub ffn_norm: *const f32,
+    pub w_gate: *const u8,
+    pub w_gate_n_blocks: usize,
+    pub w_up: *const u8,
+    pub w_up_n_blocks: usize,
+    pub w_down: *const u8,
+    pub w_down_n_blocks: usize,
 }
 
 pub struct LayerWeights {
@@ -56,6 +82,14 @@ pub struct LayerWeights {
 // Safe because GgufFile owns the backing data and must outlive BitNetModel.
 unsafe impl Send for BitNetModel {}
 unsafe impl Sync for BitNetModel {}
+
+fn load_q4k_tensor(gguf: &GgufFile, name: &str) -> Result<(*const u8, usize), String> {
+    let data = gguf
+        .tensor_data(name)
+        .ok_or_else(|| format!("missing tensor: {name}"))?;
+    let n_blocks = data.len() / 144;
+    Ok((data.as_ptr(), n_blocks))
+}
 
 fn tensor_ptr<T>(gguf: &GgufFile, name: &str) -> Result<*const T, String> {
     let data = gguf
@@ -178,28 +212,54 @@ impl BitNetModel {
         };
 
         if quant_type == QuantType::Q4K {
-            // Q4_K weight loading will be added in a later task (T8).
-            // For now, return model with empty layers and null embed pointers.
+            let mut q4k_layers = Vec::with_capacity(n_layers);
+            for layer in 0..n_layers {
+                let prefix = format!("blk.{layer}");
+                let attn_norm = tensor_ptr::<f32>(gguf, &format!("{prefix}.attn_norm.weight"))?;
+                let (wq, wq_nb) = load_q4k_tensor(gguf, &format!("{prefix}.attn_q.weight"))?;
+                let (wk, wk_nb) = load_q4k_tensor(gguf, &format!("{prefix}.attn_k.weight"))?;
+                let (wv, wv_nb) = load_q4k_tensor(gguf, &format!("{prefix}.attn_v.weight"))?;
+                let (wo, wo_nb) = load_q4k_tensor(gguf, &format!("{prefix}.attn_output.weight"))?;
+                let ffn_norm = tensor_ptr::<f32>(gguf, &format!("{prefix}.ffn_norm.weight"))?;
+                let (w_gate, w_gate_nb) = load_q4k_tensor(gguf, &format!("{prefix}.ffn_gate.weight"))?;
+                let (w_up, w_up_nb) = load_q4k_tensor(gguf, &format!("{prefix}.ffn_up.weight"))?;
+                let (w_down, w_down_nb) = load_q4k_tensor(gguf, &format!("{prefix}.ffn_down.weight"))?;
+                q4k_layers.push(Q4KLayerWeights {
+                    attn_norm, wq, wq_n_blocks: wq_nb, wk, wk_n_blocks: wk_nb,
+                    wv, wv_n_blocks: wv_nb, wo, wo_n_blocks: wo_nb,
+                    ffn_norm, w_gate, w_gate_n_blocks: w_gate_nb, w_up, w_up_n_blocks: w_up_nb,
+                    w_down, w_down_n_blocks: w_down_nb,
+                });
+            }
+
+            let (output_weight, output_nb) = load_q4k_tensor(gguf, "output.weight")?;
+
+            let embed_ptr = gguf.tensor_data("token_embd.weight")
+                .ok_or("missing tensor: token_embd.weight")?;
+            let embed_weight_ptr = embed_ptr.as_ptr();
+
+            let embed_idx = gguf.tensor_map["token_embd.weight"];
+            let embed_dtype = gguf.tensors[embed_idx].dtype;
+
+            let n_blocks_per_row = hidden_dim / 256;
+            let row_bytes = n_blocks_per_row * 144;
+            eprintln!("  Q4K: {} layers, embed dtype={}, {} blocks/row ({} bytes/row)",
+                n_layers, embed_dtype, n_blocks_per_row, row_bytes);
+
             return Ok(BitNetModel {
-                quant_type,
-                activation,
-                has_sub_norms,
-                n_layers,
-                hidden_dim,
-                n_heads,
-                n_kv_heads,
-                head_dim,
-                kv_dim,
-                ffn_dim,
-                vocab_size,
-                rope_theta,
-                rms_eps,
+                quant_type, activation, has_sub_norms,
+                n_layers, hidden_dim, n_heads, n_kv_heads, head_dim, kv_dim, ffn_dim,
+                vocab_size, rope_theta, rms_eps,
                 layers: Vec::new(),
-                embed_weight_f16: std::ptr::null(),
+                embed_weight_f16: embed_weight_ptr,
                 embed_weight_i8: Vec::new(),
                 embed_row_scales: Vec::new(),
-                norm_weight: std::ptr::null(),
+                norm_weight: tensor_ptr::<f32>(gguf, "output_norm.weight")?,
                 _weight_data: Vec::new(),
+                q4k_layers,
+                output_weight,
+                output_n_blocks: output_nb,
+                embed_dtype,
             });
         }
 
@@ -297,6 +357,10 @@ impl BitNetModel {
             embed_row_scales,
             norm_weight,
             _weight_data: weight_data,
+            q4k_layers: Vec::new(),
+            output_weight: std::ptr::null(),
+            output_n_blocks: 0,
+            embed_dtype: 1, // F16
         })
     }
 }
