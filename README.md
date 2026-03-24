@@ -37,28 +37,50 @@ Decode within 1% of llama.cpp. Prefill gap is true kernel-level GEMM batching (p
 
 ## Quick start
 
+### 1. Build
+
 ```bash
 # Build kernels (needs eacompute compiler)
 EA=/path/to/ea make kernels
 
-# Build (kernels embedded in binary)
+# Build binary (kernels embedded — no LD_LIBRARY_PATH needed)
 cargo build --release
 
-# BitNet
-./target/release/cougar --model path/to/ggml-model-i2_s.gguf \
-  --prompt "The capital of France is"
-
-# Llama 3.2 Q4_K_M
-./target/release/cougar --model path/to/Llama-3.2-3B-Instruct-Q4_K_M.gguf \
-  --prompt "Explain quantum mechanics"
-
-# Interactive chat
-./target/release/cougar --model <model.gguf> --interactive
-
-# Web chat UI
-./target/release/cougar --model <model.gguf> --serve
-# Open http://localhost:8080
+# Add to PATH (do this once)
+ln -s $(pwd)/target/release/cougar ~/.local/bin/cougar
 ```
+
+### 2. Download a model
+
+```bash
+mkdir -p ~/.cougar/models
+
+# BitNet b1.58 2B-4T (fast, 1.7 GB)
+curl -L "https://huggingface.co/microsoft/bitnet-b1.58-2B-4T-gguf/resolve/main/ggml-model-i2_s.gguf" \
+  -o ~/.cougar/models/ggml-model-i2_s.gguf
+
+# Llama 3.2 3B Instruct Q4_K_M (smarter, 1.9 GB)
+curl -L "https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf" \
+  -o ~/.cougar/models/Llama-3.2-3B-Instruct-Q4_K_M.gguf
+```
+
+### 3. Run
+
+```bash
+# Chat with Llama in the browser
+cougar --model llama --serve
+
+# Chat with BitNet in the terminal
+cougar --model bitnet --interactive
+
+# Single prompt
+cougar --model llama --prompt "tell me a joke"
+
+# No --model needed if a model exists in ~/.cougar/models/
+cougar --prompt "Hello"
+```
+
+`--model llama` and `--model bitnet` are shorthands for the default paths. You can also pass any GGUF file path directly.
 
 ## Architecture
 
@@ -124,30 +146,21 @@ Both paths use a persistent condvar-based thread pool with QKV `run_split3` conc
 ## CLI
 
 ```
-cougar --model <path.gguf> --prompt <text> [options]
-cougar --model <path.gguf> --interactive [options]
-cougar --model <path.gguf> --serve [--port 8080] [options]
+cougar --model llama --serve                     # web chat UI
+cougar --model bitnet --interactive              # terminal chat
+cougar --model llama --prompt "tell me a joke"   # single prompt
+cougar --model /path/to/model.gguf --serve       # custom model
 
 Options:
+  --model <llama|bitnet|path.gguf>   Model shorthand or file path
+  --prompt <text>         Generate from a single prompt
+  --interactive           Interactive REPL (stdin/stdout)
+  --serve                 Web chat UI with SSE streaming
   --max-tokens N          Maximum tokens to generate (default: 128)
   --temperature T         Sampling temperature, 0 = greedy (default: 0)
   --repetition-penalty F  Penalize repeated tokens (default: 1.1)
   --max-seq-len N         Maximum sequence length (default: 2048)
   --port N                Server port (default: 8080)
-```
-
-## Models
-
-```bash
-mkdir -p ~/.cougar/models
-
-# BitNet b1.58 2B-4T
-curl -L "https://huggingface.co/microsoft/bitnet-b1.58-2B-4T-gguf/resolve/main/ggml-model-i2_s.gguf" \
-  -o ~/.cougar/models/ggml-model-i2_s.gguf
-
-# Llama 3.2 3B Instruct Q4_K_M
-curl -L "https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf" \
-  -o ~/.cougar/models/Llama-3.2-3B-Instruct-Q4_K_M.gguf
 ```
 
 ## Building
