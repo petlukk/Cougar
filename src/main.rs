@@ -92,7 +92,8 @@ fn main() {
     eprintln!("cougar> prompt: {} tokens", tokens.len());
 
     let (output, _prefill_ms, _decode_ms) = InferenceState::generate(
-        &model, &tokens, max_tokens, temperature, repetition_penalty, tokenizer.eos_id, max_seq_len,
+        &model, &tokens, max_tokens, temperature, repetition_penalty,
+        tokenizer.eos_id, max_seq_len, |_| {},
     );
 
     let generated = &output[tokens.len()..];
