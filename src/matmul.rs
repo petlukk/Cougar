@@ -210,6 +210,15 @@ pub(crate) fn ternary_matmul_qkv(
     pool: &ThreadPool,
 ) {
     let total = pool.thread_count();
+
+    // Need at least 3 threads for a 3-way split; fall back to sequential.
+    if total < 3 {
+        ternary_matmul_mt_n(w_q, act, act_scale, act_sum, scale_q, out_q, out_dim_q, in_dim, total, pool);
+        ternary_matmul_mt_n(w_k, act, act_scale, act_sum, scale_k, out_k, out_dim_kv, in_dim, total, pool);
+        ternary_matmul_mt_n(w_v, act, act_scale, act_sum, scale_v, out_v, out_dim_kv, in_dim, total, pool);
+        return;
+    }
+
     let q_threads = (total / 2).max(1);
     let remaining = total - q_threads;
     let k_threads = remaining / 2;

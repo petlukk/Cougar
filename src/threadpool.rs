@@ -244,11 +244,12 @@ mod tests {
     #[test]
     fn test_run_subset_of_threads() {
         let pool = ThreadPool::new();
+        let n = pool.thread_count().min(4);
         let count = AtomicUsize::new(0);
-        pool.run(4, |_tid, _n| {
+        pool.run(n, |_tid, _n| {
             count.fetch_add(1, Ordering::Relaxed);
         });
-        assert_eq!(count.load(Ordering::Relaxed), 4);
+        assert_eq!(count.load(Ordering::Relaxed), n);
     }
 
     #[test]
