@@ -12,6 +12,14 @@ extern "C" {
         scores: *mut i32,
         n: i32,
     );
+    pub fn i2_dot_i8_4row_dual(
+        gw0: *const u8, gw1: *const u8, gw2: *const u8, gw3: *const u8,
+        uw0: *const u8, uw1: *const u8, uw2: *const u8, uw3: *const u8,
+        activations: *const i8,
+        gate_scores: *mut i32,
+        up_scores: *mut i32,
+        n: i32,
+    );
 }
 
 #[link(name = "bitnet_quant")]

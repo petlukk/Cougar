@@ -164,28 +164,6 @@ impl ThreadPool {
         );
     }
 
-    pub fn run_split2(
-        &self,
-        n1: usize, f1: impl Fn(usize, usize) + Send + Sync,
-        n2: usize, f2: impl Fn(usize, usize) + Send + Sync,
-    ) {
-        debug_assert!(
-            n1 + n2 <= self.n_threads,
-            "split2 {} + {} > pool {}", n1, n2, self.n_threads
-        );
-        if n1 + n2 == 0 { return; }
-        let r1: &dyn Fn(usize, usize) = &f1;
-        let r2: &dyn Fn(usize, usize) = &f2;
-        // Safety: dispatch() blocks until all workers finish.
-        let r1: &dyn Fn(usize, usize) = unsafe { std::mem::transmute(r1) };
-        let r2: &dyn Fn(usize, usize) = unsafe { std::mem::transmute(r2) };
-        self.dispatch(
-            [r1 as *const _, r2 as *const _, NOOP_FN as *const _],
-            [n1, n1 + n2, 0],
-            2,
-        );
-    }
-
     pub fn run_split3(
         &self,
         n1: usize, f1: impl Fn(usize, usize) + Send + Sync,
@@ -279,22 +257,6 @@ mod tests {
     }
 
     #[test]
-    fn test_run_split2() {
-        let pool = ThreadPool::new();
-        let n = pool.thread_count();
-        let half = n / 2;
-        let rest = n - half;
-        let count_a = AtomicUsize::new(0);
-        let count_b = AtomicUsize::new(0);
-        pool.run_split2(
-            half, |_tid, _n| { count_a.fetch_add(1, Ordering::Relaxed); },
-            rest, |_tid, _n| { count_b.fetch_add(1, Ordering::Relaxed); },
-        );
-        assert_eq!(count_a.load(Ordering::Relaxed), half);
-        assert_eq!(count_b.load(Ordering::Relaxed), rest);
-    }
-
-    #[test]
     fn test_run_split3() {
         let pool = ThreadPool::new();
         let n = pool.thread_count();
@@ -314,21 +276,4 @@ mod tests {
         assert_eq!(c3.load(Ordering::Relaxed), n3);
     }
 
-    #[test]
-    fn test_split2_thread_ids_are_local() {
-        let pool = ThreadPool::new();
-        let n = pool.thread_count();
-        let half = n / 2;
-        let rest = n - half;
-        let mut ids_a = vec![0usize; half];
-        let mut ids_b = vec![0usize; rest];
-        let ptr_a = ids_a.as_mut_ptr() as usize;
-        let ptr_b = ids_b.as_mut_ptr() as usize;
-        pool.run_split2(
-            half, |tid, _n| { unsafe { *(ptr_a as *mut usize).add(tid) = tid; } },
-            rest, |tid, _n| { unsafe { *(ptr_b as *mut usize).add(tid) = tid; } },
-        );
-        for i in 0..half { assert_eq!(ids_a[i], i); }
-        for i in 0..rest { assert_eq!(ids_b[i], i); }
-    }
 }

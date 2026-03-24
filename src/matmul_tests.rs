@@ -232,9 +232,9 @@ fn test_ternary_matmul_qkv_runs() {
     }
 }
 
-/// Smoke test: `ternary_matmul_parallel_pair` runs and produces finite, non-zero output.
+/// Smoke test: `ternary_matmul_fused_pair` runs and produces finite, non-zero output.
 #[test]
-fn test_ternary_matmul_parallel_pair_runs() {
+fn test_ternary_matmul_fused_pair_runs() {
     let in_dim: usize = 128;
     let out_dim: usize = 8;
 
@@ -260,7 +260,7 @@ fn test_ternary_matmul_parallel_pair_runs() {
 
     let pool = crate::threadpool::ThreadPool::new();
 
-    ternary_matmul_parallel_pair(
+    ternary_matmul_fused_pair(
         w_a.as_ptr(), 1.0f32,
         w_b.as_ptr(), 1.0f32,
         act.as_ptr(), act_scale, act_sum,
@@ -276,6 +276,67 @@ fn test_ternary_matmul_parallel_pair_runs() {
     for (i, &v) in out_b.iter().enumerate() {
         assert!(v.is_finite(), "out_b[{i}] is not finite: {v}");
         assert!(v != 0.0, "out_b[{i}] unexpectedly zero");
+    }
+}
+
+/// Verify fused dual kernel matches two separate i2_dot_i8_4row calls.
+#[test]
+fn test_fused_dual_matches_separate() {
+    let in_dim: usize = 256;
+    let out_dim: usize = 8;
+
+    // Random-ish weights (deterministic pattern)
+    let make_weights = |seed: u8| -> Vec<u8> {
+        let ternary: Vec<i8> = (0..out_dim * in_dim)
+            .map(|i| ((i as u8).wrapping_mul(seed).wrapping_add(37) % 3) as i8)
+            .collect();
+        let row_bytes = in_dim / 4;
+        let mut w = Vec::with_capacity(out_dim * row_bytes);
+        for r in 0..out_dim {
+            w.extend_from_slice(&pack_ternary_weights(&ternary[r * in_dim..(r + 1) * in_dim], in_dim));
+        }
+        w
+    };
+
+    let w_gate = make_weights(17);
+    let w_up = make_weights(53);
+    let act: Vec<i8> = (0..in_dim).map(|i| ((i % 127) as i8) - 63).collect();
+    let act_sum: i32 = act.iter().map(|&v| v as i32).sum();
+
+    let pool = crate::threadpool::ThreadPool::new();
+
+    // Separate: use ternary_matmul_mt_n for each
+    let mut sep_gate = vec![0.0f32; out_dim];
+    let mut sep_up = vec![0.0f32; out_dim];
+    ternary_matmul_mt_n(
+        w_gate.as_ptr(), act.as_ptr(), 127.0, act_sum, 1.0,
+        &mut sep_gate, out_dim, in_dim, pool.thread_count(), &pool,
+    );
+    ternary_matmul_mt_n(
+        w_up.as_ptr(), act.as_ptr(), 127.0, act_sum, 1.0,
+        &mut sep_up, out_dim, in_dim, pool.thread_count(), &pool,
+    );
+
+    // Fused
+    let mut fused_gate = vec![0.0f32; out_dim];
+    let mut fused_up = vec![0.0f32; out_dim];
+    ternary_matmul_fused_pair(
+        w_gate.as_ptr(), 1.0,
+        w_up.as_ptr(), 1.0,
+        act.as_ptr(), 127.0, act_sum,
+        &mut fused_gate, &mut fused_up,
+        out_dim, in_dim, &pool,
+    );
+
+    for i in 0..out_dim {
+        assert!(
+            (fused_gate[i] - sep_gate[i]).abs() < 1e-6,
+            "gate[{i}]: fused={} separate={}", fused_gate[i], sep_gate[i]
+        );
+        assert!(
+            (fused_up[i] - sep_up[i]).abs() < 1e-6,
+            "up[{i}]: fused={} separate={}", fused_up[i], sep_up[i]
+        );
     }
 }
 

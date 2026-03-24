@@ -143,3 +143,115 @@ export func i2_dot_i8_4row(
     scores[2] = reduce_add(r2)
     scores[3] = reduce_add(r3)
 }
+
+// Fused dual 4-row dot product: 4 gate rows + 4 up rows × shared activations.
+// Loads activations once per block, computes both projections simultaneously.
+// 8 accumulators (tight register pressure — 16 XMM used).
+export func i2_dot_i8_4row_dual(
+    gw0: *restrict u8, gw1: *restrict u8, gw2: *restrict u8, gw3: *restrict u8,
+    uw0: *restrict u8, uw1: *restrict u8, uw2: *restrict u8, uw3: *restrict u8,
+    activations: *restrict i8,
+    out gate_scores: *mut i32 [cap: 4],
+    out up_scores: *mut i32 [cap: 4],
+    n: i32
+) {
+    let mask: u8x16 = splat(3)
+    let s6: u8x16 = splat(6)
+    let s4: u8x16 = splat(4)
+    let s2: u8x16 = splat(2)
+    let mut g0: i32x4 = splat(0)
+    let mut g1: i32x4 = splat(0)
+    let mut g2: i32x4 = splat(0)
+    let mut g3: i32x4 = splat(0)
+    let mut u0: i32x4 = splat(0)
+    let mut u1: i32x4 = splat(0)
+    let mut u2: i32x4 = splat(0)
+    let mut u3: i32x4 = splat(0)
+    let n_blocks: i32 = n / 128
+
+    let mut blk: i32 = 0
+    while blk < n_blocks {
+        let bw: i32 = blk * 32
+        let ba: i32 = blk * 128
+
+        let mut half: i32 = 0
+        while half < 2 {
+            let pw: i32 = bw + half * 16
+            let off: i32 = half * 16
+
+            // Load activations once — shared across all 8 rows
+            let a0: i8x16 = load(activations, ba + off)
+            let a1: i8x16 = load(activations, ba + 32 + off)
+            let a2: i8x16 = load(activations, ba + 64 + off)
+            let a3: i8x16 = load(activations, ba + 96 + off)
+
+            // Gate row 0
+            let pg0: u8x16 = load(gw0, pw)
+            g0 = g0 .+ maddubs_i32((pg0 .>> s6) .& mask, a0)
+            g0 = g0 .+ maddubs_i32((pg0 .>> s4) .& mask, a1)
+            g0 = g0 .+ maddubs_i32((pg0 .>> s2) .& mask, a2)
+            g0 = g0 .+ maddubs_i32(pg0 .& mask, a3)
+
+            // Gate row 1
+            let pg1: u8x16 = load(gw1, pw)
+            g1 = g1 .+ maddubs_i32((pg1 .>> s6) .& mask, a0)
+            g1 = g1 .+ maddubs_i32((pg1 .>> s4) .& mask, a1)
+            g1 = g1 .+ maddubs_i32((pg1 .>> s2) .& mask, a2)
+            g1 = g1 .+ maddubs_i32(pg1 .& mask, a3)
+
+            // Gate row 2
+            let pg2: u8x16 = load(gw2, pw)
+            g2 = g2 .+ maddubs_i32((pg2 .>> s6) .& mask, a0)
+            g2 = g2 .+ maddubs_i32((pg2 .>> s4) .& mask, a1)
+            g2 = g2 .+ maddubs_i32((pg2 .>> s2) .& mask, a2)
+            g2 = g2 .+ maddubs_i32(pg2 .& mask, a3)
+
+            // Gate row 3
+            let pg3: u8x16 = load(gw3, pw)
+            g3 = g3 .+ maddubs_i32((pg3 .>> s6) .& mask, a0)
+            g3 = g3 .+ maddubs_i32((pg3 .>> s4) .& mask, a1)
+            g3 = g3 .+ maddubs_i32((pg3 .>> s2) .& mask, a2)
+            g3 = g3 .+ maddubs_i32(pg3 .& mask, a3)
+
+            // Up row 0
+            let pu0: u8x16 = load(uw0, pw)
+            u0 = u0 .+ maddubs_i32((pu0 .>> s6) .& mask, a0)
+            u0 = u0 .+ maddubs_i32((pu0 .>> s4) .& mask, a1)
+            u0 = u0 .+ maddubs_i32((pu0 .>> s2) .& mask, a2)
+            u0 = u0 .+ maddubs_i32(pu0 .& mask, a3)
+
+            // Up row 1
+            let pu1: u8x16 = load(uw1, pw)
+            u1 = u1 .+ maddubs_i32((pu1 .>> s6) .& mask, a0)
+            u1 = u1 .+ maddubs_i32((pu1 .>> s4) .& mask, a1)
+            u1 = u1 .+ maddubs_i32((pu1 .>> s2) .& mask, a2)
+            u1 = u1 .+ maddubs_i32(pu1 .& mask, a3)
+
+            // Up row 2
+            let pu2: u8x16 = load(uw2, pw)
+            u2 = u2 .+ maddubs_i32((pu2 .>> s6) .& mask, a0)
+            u2 = u2 .+ maddubs_i32((pu2 .>> s4) .& mask, a1)
+            u2 = u2 .+ maddubs_i32((pu2 .>> s2) .& mask, a2)
+            u2 = u2 .+ maddubs_i32(pu2 .& mask, a3)
+
+            // Up row 3
+            let pu3: u8x16 = load(uw3, pw)
+            u3 = u3 .+ maddubs_i32((pu3 .>> s6) .& mask, a0)
+            u3 = u3 .+ maddubs_i32((pu3 .>> s4) .& mask, a1)
+            u3 = u3 .+ maddubs_i32((pu3 .>> s2) .& mask, a2)
+            u3 = u3 .+ maddubs_i32(pu3 .& mask, a3)
+
+            half = half + 1
+        }
+        blk = blk + 1
+    }
+
+    gate_scores[0] = reduce_add(g0)
+    gate_scores[1] = reduce_add(g1)
+    gate_scores[2] = reduce_add(g2)
+    gate_scores[3] = reduce_add(g3)
+    up_scores[0] = reduce_add(u0)
+    up_scores[1] = reduce_add(u1)
+    up_scores[2] = reduce_add(u2)
+    up_scores[3] = reduce_add(u3)
+}

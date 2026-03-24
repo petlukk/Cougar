@@ -274,8 +274,9 @@ pub(crate) fn ternary_matmul_qkv(
     );
 }
 
-/// Run two ternary matmuls concurrently, splitting threads between them.
-pub(crate) fn ternary_matmul_parallel_pair(
+/// Fused gate+up matmul: each thread computes both projections for its rows,
+/// sharing activation loads via the i2_dot_i8_4row_dual kernel.
+pub(crate) fn ternary_matmul_fused_pair(
     w_a: *const u8, scale_a: f32,
     w_b: *const u8, scale_b: f32,
     act: *const i8, act_scale: f32, act_sum: i32,
@@ -284,55 +285,55 @@ pub(crate) fn ternary_matmul_parallel_pair(
     pool: &ThreadPool,
 ) {
     let total = pool.thread_count();
-    let half = (total / 2).max(1);
-
     let row_bytes = in_dim / 4;
+    let wa_ptr = w_a as usize;
+    let wb_ptr = w_b as usize;
     let act_ptr = act as usize;
+    let oa_ptr = out_a.as_mut_ptr() as usize;
+    let ob_ptr = out_b.as_mut_ptr() as usize;
+    let scale_a_combined = (act_scale / 127.0) * scale_a;
+    let scale_b_combined = (act_scale / 127.0) * scale_b;
 
-    let make_work = |w_ptr: usize, out_ptr: usize, scale: f32| {
-        move |tid: usize, n_threads: usize| {
-            let chunk = ((out_dim + n_threads - 1) / n_threads + 3) & !3;
-            let start = tid * chunk;
-            let end = (start + chunk).min(out_dim);
-            if start >= end { return; }
-            let count = end - start;
-            let weight = w_ptr as *const u8;
-            let act = act_ptr as *const i8;
-            let out_slice = unsafe {
-                std::slice::from_raw_parts_mut((out_ptr as *mut f32).add(start), count)
-            };
-            let combined_scale = (act_scale / 127.0) * scale;
-            let mut raw = vec![0i32; count];
-            let mut r = 0;
-            unsafe {
-                while r + 4 <= count {
-                    let row = start + r;
-                    ffi::i2_dot_i8_4row(
-                        weight.add(row * row_bytes),
-                        weight.add((row + 1) * row_bytes),
-                        weight.add((row + 2) * row_bytes),
-                        weight.add((row + 3) * row_bytes),
-                        act, raw[r..].as_mut_ptr(), in_dim as i32,
-                    );
-                    r += 4;
+    pool.run(total, |tid, n_threads| {
+        let chunk = ((out_dim + n_threads - 1) / n_threads + 3) & !3;
+        let start = tid * chunk;
+        let end = (start + chunk).min(out_dim);
+        if start >= end { return; }
+        let count = end - start;
+        let wa = wa_ptr as *const u8;
+        let wb = wb_ptr as *const u8;
+        let act = act_ptr as *const i8;
+        let oa = unsafe { std::slice::from_raw_parts_mut((oa_ptr as *mut f32).add(start), count) };
+        let ob = unsafe { std::slice::from_raw_parts_mut((ob_ptr as *mut f32).add(start), count) };
+        let mut raw_a = vec![0i32; 4];
+        let mut raw_b = vec![0i32; 4];
+        let mut r = 0;
+        unsafe {
+            while r + 4 <= count {
+                let row = start + r;
+                ffi::i2_dot_i8_4row_dual(
+                    wa.add(row * row_bytes), wa.add((row+1) * row_bytes),
+                    wa.add((row+2) * row_bytes), wa.add((row+3) * row_bytes),
+                    wb.add(row * row_bytes), wb.add((row+1) * row_bytes),
+                    wb.add((row+2) * row_bytes), wb.add((row+3) * row_bytes),
+                    act, raw_a.as_mut_ptr(), raw_b.as_mut_ptr(), in_dim as i32,
+                );
+                for j in 0..4 {
+                    oa[r + j] = (raw_a[j] - act_sum) as f32 * scale_a_combined;
+                    ob[r + j] = (raw_b[j] - act_sum) as f32 * scale_b_combined;
                 }
-                while r < count {
-                    raw[r] = ffi::i2_dot_i8(
-                        weight.add((start + r) * row_bytes), act, in_dim as i32,
-                    );
-                    r += 1;
-                }
+                r += 4;
             }
-            for i in 0..count {
-                out_slice[i] = (raw[i] - act_sum) as f32 * combined_scale;
+            while r < count {
+                let row = start + r;
+                let va = ffi::i2_dot_i8(wa.add(row * row_bytes), act, in_dim as i32);
+                let vb = ffi::i2_dot_i8(wb.add(row * row_bytes), act, in_dim as i32);
+                oa[r] = (va - act_sum) as f32 * scale_a_combined;
+                ob[r] = (vb - act_sum) as f32 * scale_b_combined;
+                r += 1;
             }
         }
-    };
-
-    pool.run_split2(
-        half, make_work(w_a as usize, out_a.as_mut_ptr() as usize, scale_a),
-        total - half, make_work(w_b as usize, out_b.as_mut_ptr() as usize, scale_b),
-    );
+    });
 }
 
 #[cfg(test)]
