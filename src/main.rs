@@ -74,7 +74,15 @@ fn main() {
                 println!("cougar {VERSION}");
                 return;
             }
-            "--model" => { i += 1; model_path = Some(args[i].clone()); }
+            "--model" => {
+                i += 1;
+                let home = std::env::var("HOME").unwrap_or_default();
+                model_path = Some(match args[i].as_str() {
+                    "bitnet" => format!("{home}/.cougar/models/ggml-model-i2_s.gguf"),
+                    "llama" => format!("{home}/.cougar/models/Llama-3.2-3B-Instruct-Q4_K_M.gguf"),
+                    other => other.to_string(),
+                });
+            }
             "--prompt" => { i += 1; prompt = Some(args[i].clone()); }
             "--max-tokens" => { max_tokens = parse_arg(&args, &mut i, "--max-tokens"); }
             "--temperature" => { temperature = parse_arg(&args, &mut i, "--temperature"); }
