@@ -56,8 +56,43 @@ fn argmax(s: &[f32]) -> u32 {
 
 fn sample(logits: &[f32], temperature: f32) -> u32 {
     if temperature <= 0.0 { return argmax(logits); }
-    let scaled: Vec<f32> = logits.iter().map(|&x| x / temperature).collect();
-    argmax(&scaled)
+
+    // Softmax with temperature scaling
+    let max_val = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    let mut probs: Vec<f32> = logits.iter().map(|&x| ((x - max_val) / temperature).exp()).collect();
+    let sum: f32 = probs.iter().sum();
+    for p in probs.iter_mut() { *p /= sum; }
+
+    // Random sampling from probability distribution
+    let r = xorshift_f32();
+    let mut cumsum = 0.0;
+    for (i, &p) in probs.iter().enumerate() {
+        cumsum += p;
+        if r < cumsum { return i as u32; }
+    }
+    (probs.len() - 1) as u32
+}
+
+/// Xorshift64 RNG returning f32 in [0, 1). Seeded from system time on first call.
+fn xorshift_f32() -> f32 {
+    use std::cell::Cell;
+    thread_local! {
+        static STATE: Cell<u64> = Cell::new(0);
+    }
+    STATE.with(|s| {
+        let mut v = s.get();
+        if v == 0 {
+            v = std::time::SystemTime::now()
+                .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                .unwrap_or_default().as_nanos() as u64;
+            if v == 0 { v = 0xdeadbeef; }
+        }
+        v ^= v << 13;
+        v ^= v >> 7;
+        v ^= v << 17;
+        s.set(v);
+        (v >> 40) as f32 / (1u64 << 24) as f32
+    })
 }
 
 impl InferenceState {
@@ -288,6 +323,20 @@ impl InferenceState {
         }
     }
 
+    pub fn apply_repetition_penalty(&mut self, generated: &[u32], penalty: f32) {
+        if penalty == 1.0 { return; }
+        for &tok in generated {
+            let idx = tok as usize;
+            if idx < self.logits.len() {
+                if self.logits[idx] > 0.0 {
+                    self.logits[idx] /= penalty;
+                } else {
+                    self.logits[idx] *= penalty;
+                }
+            }
+        }
+    }
+
     pub fn sample_logits(&self, temperature: f32) -> u32 {
         sample(&self.logits, temperature)
     }
@@ -297,6 +346,7 @@ impl InferenceState {
         prompt_tokens: &[u32],
         max_tokens: usize,
         temperature: f32,
+        repetition_penalty: f32,
         eos_id: u32,
         max_seq_len: usize,
     ) -> (Vec<u32>, f64, f64) {
@@ -323,6 +373,7 @@ impl InferenceState {
             if pos >= max_seq_len {
                 break;
             }
+            state.apply_repetition_penalty(&output, repetition_penalty);
             let next = state.sample_logits(temperature);
             if next == eos_id {
                 break;

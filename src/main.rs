@@ -17,6 +17,7 @@ fn main() {
     let mut prompt = None;
     let mut max_tokens: usize = 128;
     let mut temperature: f32 = 0.0;
+    let mut repetition_penalty: f32 = 1.1;
     let mut max_seq_len: usize = 2048;
 
     let mut i = 1;
@@ -38,6 +39,10 @@ fn main() {
                 i += 1;
                 temperature = args[i].parse().expect("invalid --temperature");
             }
+            "--repetition-penalty" => {
+                i += 1;
+                repetition_penalty = args[i].parse().expect("invalid --repetition-penalty");
+            }
             "--max-seq-len" => {
                 i += 1;
                 max_seq_len = args[i].parse().expect("invalid --max-seq-len");
@@ -51,7 +56,7 @@ fn main() {
     }
 
     let model_path = model_path.unwrap_or_else(|| {
-        eprintln!("Usage: cougar --model <path.gguf> --prompt <text> [--max-tokens N] [--temperature T]");
+        eprintln!("Usage: cougar --model <path.gguf> --prompt <text> [--max-tokens N] [--temperature T] [--repetition-penalty F]");
         std::process::exit(1);
     });
     let prompt_text = prompt.unwrap_or_else(|| {
@@ -87,7 +92,7 @@ fn main() {
     eprintln!("cougar> prompt: {} tokens", tokens.len());
 
     let (output, _prefill_ms, _decode_ms) = InferenceState::generate(
-        &model, &tokens, max_tokens, temperature, tokenizer.eos_id, max_seq_len,
+        &model, &tokens, max_tokens, temperature, repetition_penalty, tokenizer.eos_id, max_seq_len,
     );
 
     let generated = &output[tokens.len()..];

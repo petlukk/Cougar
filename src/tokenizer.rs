@@ -1,4 +1,8 @@
 //! Byte-level BPE tokenizer parsed from GGUF vocab metadata.
+//!
+//! Handles GPT-2 byte encoding where "bad" bytes (0-32, 127-160, 173) are
+//! shifted to unicode 256+. Token strings in the GGUF use this encoding;
+//! we reverse it at load time so the vocab stores raw bytes.
 
 use std::collections::HashMap;
 use crate::gguf::{GgufFile, MetaValue};
@@ -17,6 +21,45 @@ fn parse_byte_token(s: &str) -> Option<u8> {
         u8::from_str_radix(&s[3..5], 16).ok()
     } else {
         None
+    }
+}
+
+/// Reverse the GPT-2 byte-to-unicode mapping for a single character.
+/// Returns the raw byte value, or None if the character isn't in the GPT-2 mapping.
+fn gpt2_unicode_to_byte(cp: u32) -> Option<u8> {
+    // "Good" bytes: identity mapping (printable ASCII + Latin-1 supplement ranges)
+    if (33..=126).contains(&cp) || (161..=172).contains(&cp) || (174..=255).contains(&cp) {
+        return Some(cp as u8);
+    }
+    // "Bad" bytes: remapped to 256+ in order: 0-32, 127-160, 173
+    if cp >= 256 {
+        let idx = (cp - 256) as u8;
+        if idx <= 32 { return Some(idx); }           // 0-32
+        if idx <= 32 + 34 { return Some(idx - 33 + 127); } // 127-160
+        if idx == 32 + 34 + 1 { return Some(173); }  // 173
+    }
+    None
+}
+
+/// Decode a GPT-2 encoded token string to raw bytes.
+/// Falls back to raw UTF-8 bytes for characters outside the GPT-2 mapping
+/// (e.g. special tokens like <|begin_of_text|>).
+fn gpt2_decode_str(s: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(s.len());
+    let mut all_mapped = true;
+    for c in s.chars() {
+        if let Some(b) = gpt2_unicode_to_byte(c as u32) {
+            out.push(b);
+        } else {
+            all_mapped = false;
+            break;
+        }
+    }
+    if all_mapped {
+        out
+    } else {
+        // Not a GPT-2 encoded token (e.g. special token) — use raw UTF-8
+        s.as_bytes().to_vec()
     }
 }
 
@@ -69,7 +112,7 @@ impl Tokenizer {
             let bytes = if let Some(b) = parse_byte_token(tok_str) {
                 vec![b]
             } else {
-                tok_str.as_bytes().to_vec()
+                gpt2_decode_str(tok_str)
             };
             token_to_id.insert(bytes.clone(), i as u32);
             vocab.push(bytes);
@@ -139,10 +182,7 @@ impl Tokenizer {
                 bytes.extend_from_slice(&self.vocab[id as usize]);
             }
         }
-        String::from_utf8_lossy(&bytes)
-            .replace('\u{0120}', " ")
-            .replace('\u{2581}', " ")
-            .replace('\u{010A}', "\n")
+        String::from_utf8_lossy(&bytes).into_owned()
     }
 }
 
