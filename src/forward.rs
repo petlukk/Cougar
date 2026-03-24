@@ -145,8 +145,18 @@ impl InferenceState {
         let mut t_ffn_act = 0u128;
         let mut t_down = 0u128;
         let mut t_out = 0u128;
-        macro_rules! tick { () => { if profile { Instant::now() } else { Instant::now() } } }
-        macro_rules! tock { ($t:expr, $s:expr) => { if profile { $t += $s.elapsed().as_nanos(); } } }
+        // Avoid Instant::now() syscalls when not profiling (210 calls/token otherwise)
+        macro_rules! prof {
+            ($t:expr, $body:expr) => {
+                if profile {
+                    let _start = Instant::now();
+                    $body;
+                    $t += _start.elapsed().as_nanos();
+                } else {
+                    $body;
+                }
+            };
+        }
 
         for layer in 0..model.n_layers {
             let lw = &model.layers[layer];
@@ -164,15 +174,15 @@ impl InferenceState {
                     &mut act_scale, &mut act_sum, h as i32,
                 );
             }
-            let s = tick!();
-            ternary_matmul_qkv(
-                lw.wq, lw.wq_scale, &mut self.q, h,
-                lw.wk, lw.wk_scale, &mut self.k, kv,
-                lw.wv, lw.wv_scale, &mut self.v,
-                self.x_quant.as_ptr(), act_scale, act_sum, h,
-                &self.pool,
-            );
-            tock!(t_qkv, s);
+            prof!(t_qkv, {
+                ternary_matmul_qkv(
+                    lw.wq, lw.wq_scale, &mut self.q, h,
+                    lw.wk, lw.wk_scale, &mut self.k, kv,
+                    lw.wv, lw.wv_scale, &mut self.v,
+                    self.x_quant.as_ptr(), act_scale, act_sum, h,
+                    &self.pool,
+                );
+            });
             build_rope_freqs(&mut self.rope_freqs, hd, pos, model.rope_theta);
             apply_rope(&mut self.q, &self.rope_freqs, hd, nh);
             apply_rope(&mut self.k, &self.rope_freqs, hd, nkv);
@@ -183,43 +193,43 @@ impl InferenceState {
                 self.v_cache[off..off + hd]
                     .copy_from_slice(&self.v[head * hd..(head + 1) * hd]);
             }
-            let s = tick!();
-            let scale = 1.0 / (hd as f32).sqrt();
-            for head in 0..nh {
-                let kv_head = head / gqa_ratio;
-                let q_off = head * hd;
-                let cache_base = (layer * nkv + kv_head) * self.max_seq_len * hd;
+            prof!(t_attn, {
+                let scale = 1.0 / (hd as f32).sqrt();
+                for head in 0..nh {
+                    let kv_head = head / gqa_ratio;
+                    let q_off = head * hd;
+                    let cache_base = (layer * nkv + kv_head) * self.max_seq_len * hd;
+                    unsafe {
+                        ffi::fused_attention_f32(
+                            self.q.as_ptr().add(q_off),
+                            self.k_cache.as_ptr().add(cache_base),
+                            self.v_cache.as_ptr().add(cache_base),
+                            self.attn_out.as_mut_ptr().add(q_off),
+                            hd as i32, seq_len as i32, scale,
+                        );
+                    }
+                }
+            });
+            prof!(t_oproj, {
                 unsafe {
-                    ffi::fused_attention_f32(
-                        self.q.as_ptr().add(q_off),
-                        self.k_cache.as_ptr().add(cache_base),
-                        self.v_cache.as_ptr().add(cache_base),
-                        self.attn_out.as_mut_ptr().add(q_off),
-                        hd as i32, seq_len as i32, scale,
+                    ffi::rmsnorm_f32(
+                        self.attn_out.as_ptr(), lw.attn_sub_norm, self.attn_out.as_mut_ptr(),
+                        h as i32, model.rms_eps,
                     );
                 }
-            }
-            tock!(t_attn, s);
-            let s = tick!();
-            unsafe {
-                ffi::rmsnorm_f32(
-                    self.attn_out.as_ptr(), lw.attn_sub_norm, self.attn_out.as_mut_ptr(),
-                    h as i32, model.rms_eps,
+                let mut attn_scale: f32 = 0.0;
+                let mut attn_sum: i32 = 0;
+                unsafe {
+                    ffi::quant_f32_i8(
+                        self.attn_out.as_ptr(), self.attn_out_quant.as_mut_ptr(),
+                        &mut attn_scale, &mut attn_sum, h as i32,
+                    );
+                }
+                ternary_matmul_mt(
+                    lw.wo, self.attn_out_quant.as_ptr(), attn_scale, attn_sum, lw.wo_scale,
+                    &mut self.tmp, h, h, &self.pool,
                 );
-            }
-            let mut attn_scale: f32 = 0.0;
-            let mut attn_sum: i32 = 0;
-            unsafe {
-                ffi::quant_f32_i8(
-                    self.attn_out.as_ptr(), self.attn_out_quant.as_mut_ptr(),
-                    &mut attn_scale, &mut attn_sum, h as i32,
-                );
-            }
-            ternary_matmul_mt(
-                lw.wo, self.attn_out_quant.as_ptr(), attn_scale, attn_sum, lw.wo_scale,
-                &mut self.tmp, h, h, &self.pool,
-            );
-            tock!(t_oproj, s);
+            });
             unsafe {
                 ffi::vecadd_f32(
                     self.x.as_ptr(), self.tmp.as_ptr(),
@@ -243,45 +253,45 @@ impl InferenceState {
                 );
             }
 
-            let s = tick!();
-            ternary_matmul_fused_pair(
-                lw.w_gate, lw.w_gate_scale,
-                lw.w_up, lw.w_up_scale,
-                self.x_quant.as_ptr(), ffn_scale, ffn_sum,
-                &mut self.gate, &mut self.up,
-                f, h, &self.pool,
-            );
-            tock!(t_ffn_gu, s);
+            prof!(t_ffn_gu, {
+                ternary_matmul_fused_pair(
+                    lw.w_gate, lw.w_gate_scale,
+                    lw.w_up, lw.w_up_scale,
+                    self.x_quant.as_ptr(), ffn_scale, ffn_sum,
+                    &mut self.gate, &mut self.up,
+                    f, h, &self.pool,
+                );
+            });
 
-            let s = tick!();
-            unsafe {
-                ffi::squared_relu_mul_f32(
-                    self.gate.as_ptr(), self.up.as_ptr(),
-                    self.hidden.as_mut_ptr(), f as i32,
-                );
-            }
-            unsafe {
-                ffi::rmsnorm_f32(
-                    self.hidden.as_ptr(), lw.ffn_sub_norm, self.hidden.as_mut_ptr(),
-                    f as i32, model.rms_eps,
-                );
-            }
-            tock!(t_ffn_act, s);
+            prof!(t_ffn_act, {
+                unsafe {
+                    ffi::squared_relu_mul_f32(
+                        self.gate.as_ptr(), self.up.as_ptr(),
+                        self.hidden.as_mut_ptr(), f as i32,
+                    );
+                }
+                unsafe {
+                    ffi::rmsnorm_f32(
+                        self.hidden.as_ptr(), lw.ffn_sub_norm, self.hidden.as_mut_ptr(),
+                        f as i32, model.rms_eps,
+                    );
+                }
+            });
 
-            let s = tick!();
-            let mut down_scale: f32 = 0.0;
-            let mut down_sum: i32 = 0;
-            unsafe {
-                ffi::quant_f32_i8(
-                    self.hidden.as_ptr(), self.hidden_quant.as_mut_ptr(),
-                    &mut down_scale, &mut down_sum, f as i32,
+            prof!(t_down, {
+                let mut down_scale: f32 = 0.0;
+                let mut down_sum: i32 = 0;
+                unsafe {
+                    ffi::quant_f32_i8(
+                        self.hidden.as_ptr(), self.hidden_quant.as_mut_ptr(),
+                        &mut down_scale, &mut down_sum, f as i32,
+                    );
+                }
+                ternary_matmul_mt(
+                    lw.w_down, self.hidden_quant.as_ptr(), down_scale, down_sum, lw.w_down_scale,
+                    &mut self.tmp, h, f, &self.pool,
                 );
-            }
-            ternary_matmul_mt(
-                lw.w_down, self.hidden_quant.as_ptr(), down_scale, down_sum, lw.w_down_scale,
-                &mut self.tmp, h, f, &self.pool,
-            );
-            tock!(t_down, s);
+            });
 
             unsafe {
                 ffi::vecadd_f32(
@@ -299,13 +309,13 @@ impl InferenceState {
             );
         }
 
-        let s = tick!();
-        i8_output_matmul_mt(
-            &model.embed_weight_i8, &model.embed_row_scales,
-            &self.x_norm, &mut self.logits,
-            model.vocab_size, h, &self.pool,
-        );
-        tock!(t_out, s);
+        prof!(t_out, {
+            i8_output_matmul_mt(
+                &model.embed_weight_i8, &model.embed_row_scales,
+                &self.x_norm, &mut self.logits,
+                model.vocab_size, h, &self.pool,
+            );
+        });
 
         if profile {
             let ms = |ns: u128| ns as f64 / 1_000_000.0;
