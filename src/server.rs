@@ -126,7 +126,15 @@ fn run_inner(
                     let _ = write!(stream, "data: [DONE]\n\n");
                 } else {
                     let mut tokens = vec![tokenizer.bos_id];
-                    tokens.extend(tokenizer.encode(&prompt_text));
+                    if use_q4k {
+                        // Llama 3 Instruct chat template
+                        let chat = format!(
+                            "<|start_header_id|>user<|end_header_id|>\n\n{prompt_text}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
+                        );
+                        tokens.extend(tokenizer.encode(&chat));
+                    } else {
+                        tokens.extend(tokenizer.encode(&prompt_text));
+                    }
                     let gen_start = Instant::now();
                     let mut gen_count = 0u64;
 

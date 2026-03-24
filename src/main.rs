@@ -160,7 +160,14 @@ fn main() {
     }
 
     let mut tokens = vec![tokenizer.bos_id];
-    tokens.extend(tokenizer.encode(&prompt_text));
+    if is_q4k {
+        let chat = format!(
+            "<|start_header_id|>user<|end_header_id|>\n\n{prompt_text}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
+        );
+        tokens.extend(tokenizer.encode(&chat));
+    } else {
+        tokens.extend(tokenizer.encode(&prompt_text));
+    }
     eprintln!("cougar> prompt: {} tokens", tokens.len());
 
     if is_q4k {

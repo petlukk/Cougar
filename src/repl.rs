@@ -81,7 +81,10 @@ pub fn run_q4k(
         if line == "/quit" { break; }
 
         let mut tokens = vec![tokenizer.bos_id];
-        tokens.extend(tokenizer.encode(line));
+        let chat = format!(
+            "<|start_header_id|>user<|end_header_id|>\n\n{line}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
+        );
+        tokens.extend(tokenizer.encode(&chat));
 
         let handle = stdout.lock();
         let mut handle = io::BufWriter::new(handle);

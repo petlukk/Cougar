@@ -128,21 +128,31 @@ impl Tokenizer {
     }
 
     pub fn encode(&self, text: &str) -> Vec<u32> {
-        let bytes = text.as_bytes();
-        if bytes.is_empty() {
+        if text.is_empty() {
             return Vec::new();
         }
 
-        // Initialize: each byte maps to its single-byte token
-        let mut tokens: Vec<u32> = Vec::with_capacity(bytes.len());
-        for &b in bytes {
-            let id = self.token_to_id.get(&vec![b]).copied();
-            match id {
-                Some(id) => tokens.push(id),
-                None => {
-                    // Should not happen if vocab has all byte tokens, but be safe
-                    tokens.push(0);
+        // Split on special tokens (e.g. <|start_header_id|>) and encode segments
+        let mut tokens: Vec<u32> = Vec::with_capacity(text.len());
+        let mut remaining = text;
+        while !remaining.is_empty() {
+            // Check if remaining starts with a special token
+            let mut found_special = false;
+            if remaining.starts_with("<|") {
+                if let Some(end) = remaining.find("|>") {
+                    let candidate = &remaining[..end + 2];
+                    if let Some(&id) = self.token_to_id.get(candidate.as_bytes()) {
+                        tokens.push(id);
+                        remaining = &remaining[candidate.len()..];
+                        found_special = true;
+                    }
                 }
+            }
+            if !found_special {
+                // Encode next byte
+                let b = remaining.as_bytes()[0];
+                tokens.push(self.token_to_id.get(&vec![b]).copied().unwrap_or(0));
+                remaining = &remaining[1..];
             }
         }
 
