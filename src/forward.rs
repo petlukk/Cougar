@@ -318,7 +318,7 @@ impl InferenceState {
             eprintln!("  FFN gate+up:  {:6.1}ms  ({:.0}%)", ms(t_ffn_gu), pct(t_ffn_gu));
             eprintln!("  FFN act+norm: {:6.1}ms  ({:.0}%)", ms(t_ffn_act), pct(t_ffn_act));
             eprintln!("  FFN down:     {:6.1}ms  ({:.0}%)", ms(t_down), pct(t_down));
-            eprintln!("  output (f16): {:6.1}ms  ({:.0}%)", ms(t_out), pct(t_out));
+            eprintln!("  output (i8):  {:6.1}ms  ({:.0}%)", ms(t_out), pct(t_out));
             eprintln!("  total:        {:6.1}ms", ms(total));
         }
     }
