@@ -71,3 +71,49 @@ pub unsafe fn squared_relu_mul_f32(gate: *const f32, up: *const f32, out: *mut f
 pub unsafe fn vecadd_f32(a: *const f32, b: *const f32, out: *mut f32, n: i32) {
     (embed::k().vecadd_f32)(a, b, out, n)
 }
+
+pub unsafe fn quant_f32_q8k(
+    src: *const f32,
+    dst_qs: *mut i8,
+    dst_d: *mut f32,
+    dst_bsums: *mut i32,
+    n: i32,
+) {
+    (embed::k().quant_f32_q8k)(src, dst_qs, dst_d, dst_bsums, n)
+}
+
+pub unsafe fn q4k_dot_q8k(
+    q4: *const u8,
+    q8: *const i8,
+    bsums: *const i32,
+    scales: *const u8,
+    mins: *const u8,
+    n_blocks: i32,
+    d: f32,
+    dmin: f32,
+) -> f32 {
+    (embed::k().q4k_dot_q8k)(q4, q8, bsums, scales, mins, n_blocks, d, dmin)
+}
+
+pub unsafe fn q4k_dot_q8k_4row(
+    rw0: *const u8, rw1: *const u8, rw2: *const u8, rw3: *const u8,
+    q8: *const i8,
+    bsums: *const i32,
+    sc0: *const u8, sc1: *const u8, sc2: *const u8, sc3: *const u8,
+    mn0: *const u8, mn1: *const u8, mn2: *const u8, mn3: *const u8,
+    scores: *mut f32,
+    n_blocks: i32,
+    d0: f32, d1: f32, d2: f32, d3: f32,
+    dm0: f32, dm1: f32, dm2: f32, dm3: f32,
+) {
+    (embed::k().q4k_dot_q8k_4row)(
+        rw0, rw1, rw2, rw3, q8, bsums,
+        sc0, sc1, sc2, sc3, mn0, mn1, mn2, mn3,
+        scores, n_blocks,
+        d0, d1, d2, d3, dm0, dm1, dm2, dm3,
+    )
+}
+
+pub unsafe fn silu_mul_f32(gate: *const f32, up: *const f32, out: *mut f32, n: i32) {
+    (embed::k().silu_mul_f32)(gate, up, out, n)
+}

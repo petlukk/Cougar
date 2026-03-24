@@ -16,6 +16,9 @@ fn main() {
         ("bitnet_quant", "libbitnet_quant.so"),
         ("bitnet_rmsnorm", "libbitnet_rmsnorm.so"),
         ("bitnet_vecadd", "libbitnet_vecadd.so"),
+        ("q4k_quant", "libq4k_quant.so"),
+        ("q4k_dot", "libq4k_dot.so"),
+        ("bitnet_silu", "libbitnet_silu.so"),
     ];
 
     let out_dir = std::env::var("OUT_DIR").unwrap();

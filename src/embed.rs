@@ -36,6 +36,21 @@ pub struct KernelTable {
     ),
     pub squared_relu_mul_f32: unsafe extern "C" fn(*const f32, *const f32, *mut f32, i32),
     pub vecadd_f32: unsafe extern "C" fn(*const f32, *const f32, *mut f32, i32),
+    pub quant_f32_q8k: unsafe extern "C" fn(*const f32, *mut i8, *mut f32, *mut i32, i32),
+    pub q4k_dot_q8k: unsafe extern "C" fn(
+        *const u8, *const i8, *const i32, *const u8, *const u8,
+        i32, f32, f32,
+    ) -> f32,
+    pub q4k_dot_q8k_4row: unsafe extern "C" fn(
+        *const u8, *const u8, *const u8, *const u8,
+        *const i8, *const i32,
+        *const u8, *const u8, *const u8, *const u8,
+        *const u8, *const u8, *const u8, *const u8,
+        *mut f32, i32,
+        f32, f32, f32, f32,
+        f32, f32, f32, f32,
+    ),
+    pub silu_mul_f32: unsafe extern "C" fn(*const f32, *const f32, *mut f32, i32),
 }
 
 // Safety: function pointers are Send+Sync (they point to loaded .so code).
@@ -91,6 +106,9 @@ fn load(dir: &PathBuf) -> Result<KernelTable, String> {
         let i8d = open_lib(dir, "libbitnet_i8dot.so")?;
         let act = open_lib(dir, "libbitnet_activate.so")?;
         let vadd = open_lib(dir, "libbitnet_vecadd.so")?;
+        let q4kq = open_lib(dir, "libq4k_quant.so")?;
+        let q4kd = open_lib(dir, "libq4k_dot.so")?;
+        let silu = open_lib(dir, "libbitnet_silu.so")?;
 
         Ok(KernelTable {
             i2_dot_i8: sym(i2s, "i2_dot_i8\0")?,
@@ -103,6 +121,10 @@ fn load(dir: &PathBuf) -> Result<KernelTable, String> {
             i8dot_4row: sym(i8d, "i8dot_4row\0")?,
             squared_relu_mul_f32: sym(act, "squared_relu_mul_f32\0")?,
             vecadd_f32: sym(vadd, "vecadd_f32\0")?,
+            quant_f32_q8k: sym(q4kq, "quant_f32_q8k\0")?,
+            q4k_dot_q8k: sym(q4kd, "q4k_dot_q8k\0")?,
+            q4k_dot_q8k_4row: sym(q4kd, "q4k_dot_q8k_4row\0")?,
+            silu_mul_f32: sym(silu, "silu_mul_f32\0")?,
         })
     }
 }
