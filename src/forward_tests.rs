@@ -8,7 +8,6 @@ fn mock_model(hidden_dim: usize, n_layers: usize, n_heads: usize, vocab_size: us
     BitNetModel {
         quant_type: crate::model::QuantType::I2S,
         activation: crate::model::Activation::SquaredReLU,
-        has_sub_norms: true,
         n_layers,
         hidden_dim,
         n_heads,
@@ -27,8 +26,8 @@ fn mock_model(hidden_dim: usize, n_layers: usize, n_heads: usize, vocab_size: us
         _weight_data: Vec::new(),
         q4k_layers: Vec::new(),
         output_weight: std::ptr::null(),
-        output_n_blocks: 0,
         embed_dtype: 1,
+        output_block_bytes: 0,
     }
 }
 

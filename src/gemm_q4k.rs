@@ -4,8 +4,6 @@ use crate::ffi;
 use crate::matmul_q4k::{q4k_4row_dot, q4k_row_dot, q4k_dual_4row_dot};
 use crate::threadpool::ThreadPool;
 
-const Q4K_BLOCK_BYTES: usize = 144;
-
 /// Batched Q8K activation data for N tokens.
 pub(crate) struct BatchQ8K {
     pub n_tokens: usize,

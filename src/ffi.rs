@@ -114,9 +114,6 @@ pub unsafe fn q4k_dot_q8k_4row(
     )
 }
 
-pub unsafe fn silu_mul_f32(gate: *const f32, up: *const f32, out: *mut f32, n: i32) {
-    (embed::k().silu_mul_f32)(gate, up, out, n)
-}
 
 #[allow(clippy::too_many_arguments)]
 pub unsafe fn q4k_dot_q8k_4row_dual(

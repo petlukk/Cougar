@@ -4,8 +4,6 @@ use crate::gemm_q4k::BatchQ8K;
 use crate::matmul_q6k::{q6k_4row_dot, q6k_row_dot};
 use crate::threadpool::ThreadPool;
 
-const Q6K_BLOCK_BYTES: usize = 210;
-
 /// GEMM: Q6_K weight[out_dim] x batch[n_tokens] -> out[n_tokens * out_dim]
 pub(crate) fn q6k_gemm_mt(
     weight: *const u8,
