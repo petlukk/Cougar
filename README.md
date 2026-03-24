@@ -10,7 +10,7 @@
 
 Llama.cpp is a beast, but even beasts have predators. 🐾
 
-A ~3,300-line BitNet b1.58 engine written in Rust + [Eä](https://github.com/petlukk/eacompute) SIMD kernels. No llama.cpp. No dependencies.
+A ~3,600-line BitNet b1.58 engine written in Rust + [Eä](https://github.com/petlukk/eacompute) SIMD kernels. No llama.cpp. No dependencies.
 
 🚀 **18.8 tok/s** (AVX2 / 16 threads) · 📦 **644 KB** binary · 🚫 Zero dependencies
 
@@ -97,8 +97,8 @@ attention:     0.2ms          fused online softmax
 ```
 cougar/
   kernels/    8 Ea kernels (.ea -> .so via eacompute)
-  src/        8 Rust modules + test files
-  tests/      13 C test harnesses (118 tests)
+  src/        8 Rust modules + test files (71 tests)
+  tests/      13 C test harnesses (102 tests)
 ```
 
 The model runs BitNet b1.58 2B-4T with:
@@ -128,7 +128,7 @@ BitNet b1.58 2B-4T is a **2 billion parameter** model with **1-bit weights**. It
 | Text continuation | Long coherent essays |
 | Pattern matching | Following instructions |
 
-Greedy decoding (temperature=0) tends to repeat after 20-30 tokens. This is normal for small models without top-p/top-k sampling.
+Repetition penalty (default 1.1) prevents loops. Temperature sampling with proper softmax is supported for more varied output.
 
 The point of cougar is proving the **inference engine**, not the model. If you want better answers, wait for larger BitNet models and drop them in — the runner handles any BitNet GGUF.
 
@@ -138,9 +138,10 @@ The point of cougar is proving the **inference engine**, not the model. If you w
 cougar --model <path.gguf> --prompt <text> [options]
 
 Options:
-  --max-tokens N      Maximum tokens to generate (default: 128)
-  --temperature T     Sampling temperature, 0 = greedy (default: 0)
-  --max-seq-len N     Maximum sequence length (default: 2048)
+  --max-tokens N          Maximum tokens to generate (default: 128)
+  --temperature T         Sampling temperature, 0 = greedy (default: 0)
+  --repetition-penalty F  Penalize repeated tokens (default: 1.1)
+  --max-seq-len N         Maximum sequence length (default: 2048)
 ```
 
 ## Building
@@ -160,7 +161,7 @@ cd ~/projects/cougar
 make kernels                              # compile .ea -> .so
 RUSTFLAGS="-L build/lib" cargo build --release
 make test                                 # 102 kernel tests
-RUSTFLAGS="-L build/lib" cargo test       # 16 Rust tests
+RUSTFLAGS="-L build/lib" cargo test       # 71 Rust tests
 ```
 
 ### Linking note
