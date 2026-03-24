@@ -18,7 +18,6 @@ fn main() {
         ("bitnet_vecadd", "libbitnet_vecadd.so"),
         ("q4k_quant", "libq4k_quant.so"),
         ("q4k_dot", "libq4k_dot.so"),
-        ("bitnet_silu", "libbitnet_silu.so"),
         ("q6k_dot", "libq6k_dot.so"),
     ];
 
