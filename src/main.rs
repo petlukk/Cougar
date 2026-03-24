@@ -4,6 +4,7 @@ mod forward;
 mod gguf;
 mod matmul;
 mod model;
+mod repl;
 mod threadpool;
 mod tokenizer;
 
@@ -21,6 +22,7 @@ fn main() {
 
     let mut model_path = None;
     let mut prompt = None;
+    let mut interactive = false;
     let mut max_tokens: usize = 128;
     let mut temperature: f32 = 0.0;
     let mut repetition_penalty: f32 = 1.1;
@@ -53,6 +55,9 @@ fn main() {
                 i += 1;
                 max_seq_len = args[i].parse().expect("invalid --max-seq-len");
             }
+            "--interactive" => {
+                interactive = true;
+            }
             other => {
                 eprintln!("Unknown argument: {other}");
                 std::process::exit(1);
@@ -62,13 +67,13 @@ fn main() {
     }
 
     let model_path = model_path.unwrap_or_else(|| {
-        eprintln!("Usage: cougar --model <path.gguf> --prompt <text> [--max-tokens N] [--temperature T] [--repetition-penalty F]");
+        eprintln!("Usage: cougar --model <path.gguf> [--prompt <text> | --interactive] [--max-tokens N] [--temperature T] [--repetition-penalty F]");
         std::process::exit(1);
     });
-    let prompt_text = prompt.unwrap_or_else(|| {
-        eprintln!("Usage: cougar --model <path.gguf> --prompt <text>");
+    if !interactive && prompt.is_none() {
+        eprintln!("Usage: cougar --model <path.gguf> [--prompt <text> | --interactive]");
         std::process::exit(1);
-    });
+    }
 
     let gguf = match gguf::GgufFile::open(model_path) {
         Ok(gf) => gf,
@@ -93,6 +98,12 @@ fn main() {
         model.n_layers, model.hidden_dim, model.n_heads, model.vocab_size,
     );
 
+    if interactive {
+        repl::run(&model, &tokenizer, max_tokens, temperature, repetition_penalty, max_seq_len);
+        return;
+    }
+
+    let prompt_text = prompt.unwrap();
     let mut tokens = vec![tokenizer.bos_id];
     tokens.extend(tokenizer.encode(prompt_text));
     eprintln!("cougar> prompt: {} tokens", tokens.len());
