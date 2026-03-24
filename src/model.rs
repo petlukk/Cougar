@@ -20,7 +20,7 @@ pub struct BitNetModel {
     pub embed_row_scales: Vec<f32>,     // per-row absmax scale
     pub norm_weight: *const f32,
     /// Owned repacked I2_S weight data (keeps pointers valid)
-    _weight_data: Vec<Vec<u8>>,
+    pub(crate) _weight_data: Vec<Vec<u8>>,
 }
 
 pub struct LayerWeights {

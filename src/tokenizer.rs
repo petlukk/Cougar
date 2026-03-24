@@ -31,8 +31,8 @@ fn gpt2_unicode_to_byte(cp: u32) -> Option<u8> {
     if (33..=126).contains(&cp) || (161..=172).contains(&cp) || (174..=255).contains(&cp) {
         return Some(cp as u8);
     }
-    // "Bad" bytes: remapped to 256+ in order: 0-32, 127-160, 173
-    if cp >= 256 {
+    // "Bad" bytes: remapped to 256..324 in order: 0-32, 127-160, 173 (68 total)
+    if cp >= 256 && cp < 256 + 68 {
         let idx = (cp - 256) as u8;
         if idx <= 32 { return Some(idx); }           // 0-32
         if idx <= 32 + 34 { return Some(idx - 33 + 127); } // 127-160
@@ -317,6 +317,101 @@ mod tests {
         assert_eq!(parse_byte_token("<0x00>"), Some(0x00));
         assert_eq!(parse_byte_token("hello"), None);
         assert_eq!(parse_byte_token("<0xGG>"), None);
+    }
+
+    // ── gpt2_unicode_to_byte ──────────────────────────────────────────
+
+    #[test]
+    fn test_gpt2_good_bytes_identity() {
+        // Printable ASCII (33-126) maps to itself
+        assert_eq!(gpt2_unicode_to_byte('!' as u32), Some(b'!'));  // 33
+        assert_eq!(gpt2_unicode_to_byte('A' as u32), Some(b'A'));  // 65
+        assert_eq!(gpt2_unicode_to_byte('~' as u32), Some(b'~'));  // 126
+    }
+
+    #[test]
+    fn test_gpt2_space_maps_from_0120() {
+        // Space (byte 32) is a "bad" byte, mapped to U+0120 (Ġ)
+        // U+0120 = 288 decimal
+        assert_eq!(gpt2_unicode_to_byte(0x0120), Some(32));
+    }
+
+    #[test]
+    fn test_gpt2_null_maps_from_0100() {
+        // Byte 0 is the first "bad" byte, mapped to U+0100 (Ā) = 256
+        assert_eq!(gpt2_unicode_to_byte(256), Some(0));
+    }
+
+    #[test]
+    fn test_gpt2_newline_maps_from_010a() {
+        // Newline (byte 10) mapped to U+010A (Ċ) = 266
+        assert_eq!(gpt2_unicode_to_byte(0x010A), Some(10));
+    }
+
+    #[test]
+    fn test_gpt2_tab_maps_from_0109() {
+        // Tab (byte 9) mapped to U+0109 = 265
+        assert_eq!(gpt2_unicode_to_byte(0x0109), Some(9));
+    }
+
+    #[test]
+    fn test_gpt2_byte_173_maps_from_end() {
+        // Byte 173 is the last "bad" byte
+        assert_eq!(gpt2_unicode_to_byte(256 + 67), Some(173));
+    }
+
+    #[test]
+    fn test_gpt2_unmapped_returns_none() {
+        // Characters outside the GPT-2 mapping
+        assert_eq!(gpt2_unicode_to_byte(0x4e2d), None); // 中
+        assert_eq!(gpt2_unicode_to_byte(0x1F600), None); // emoji
+    }
+
+    // ── gpt2_decode_str ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_gpt2_decode_str_ascii() {
+        assert_eq!(gpt2_decode_str("Hello"), b"Hello".to_vec());
+    }
+
+    #[test]
+    fn test_gpt2_decode_str_space_prefix() {
+        // "Ġthe" should decode to " the" (Ġ = space)
+        assert_eq!(gpt2_decode_str("\u{0120}the"), b" the".to_vec());
+    }
+
+    #[test]
+    fn test_gpt2_decode_str_newline() {
+        assert_eq!(gpt2_decode_str("\u{010A}"), vec![10]); // newline
+    }
+
+    #[test]
+    fn test_gpt2_decode_str_special_token_fallback() {
+        // Special tokens like <|begin_of_text|> contain unmapped chars (|),
+        // wait — | is ASCII 124, which IS in the good range. Let me use a
+        // token with non-GPT-2 chars. Actually special tokens just use ASCII.
+        // The fallback triggers when a char has no GPT-2 mapping at all.
+        let s = "Hello\u{4e2d}World"; // 中 is not GPT-2 mapped
+        assert_eq!(gpt2_decode_str(s), s.as_bytes().to_vec());
+    }
+
+    #[test]
+    fn test_gpt2_all_256_bytes_reachable() {
+        // Every byte 0-255 must be reachable through the GPT-2 mapping
+        let mut found = [false; 256];
+        // Good bytes: 33-126, 161-172, 174-255
+        for cp in 33..=126 { found[gpt2_unicode_to_byte(cp).unwrap() as usize] = true; }
+        for cp in 161..=172 { found[gpt2_unicode_to_byte(cp).unwrap() as usize] = true; }
+        for cp in 174..=255 { found[gpt2_unicode_to_byte(cp).unwrap() as usize] = true; }
+        // Bad bytes: mapped at 256+
+        for cp in 256..=323 { // 256 + 68 = 324
+            if let Some(b) = gpt2_unicode_to_byte(cp) {
+                found[b as usize] = true;
+            }
+        }
+        for (b, &f) in found.iter().enumerate() {
+            assert!(f, "byte {b} (0x{b:02x}) not reachable through GPT-2 mapping");
+        }
     }
 
     #[test]

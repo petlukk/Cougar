@@ -1,4 +1,29 @@
 use super::*;
+use crate::model::BitNetModel;
+
+/// Minimal model for testing InferenceState without real weights.
+fn mock_model(hidden_dim: usize, n_layers: usize, n_heads: usize, vocab_size: usize) -> BitNetModel {
+    let head_dim = if n_heads > 0 { hidden_dim / n_heads } else { hidden_dim };
+    let n_kv_heads = n_heads.max(1);
+    BitNetModel {
+        n_layers,
+        hidden_dim,
+        n_heads,
+        n_kv_heads,
+        head_dim,
+        kv_dim: n_kv_heads * head_dim,
+        ffn_dim: hidden_dim * 4,
+        vocab_size,
+        rope_theta: 500000.0,
+        rms_eps: 1e-5,
+        layers: Vec::new(),
+        embed_weight_f16: std::ptr::null(),
+        embed_weight_i8: Vec::new(),
+        embed_row_scales: Vec::new(),
+        norm_weight: std::ptr::null(),
+        _weight_data: Vec::new(),
+    }
+}
 
 // ── argmax ─────────────────────────────────────────────────────────────
 
@@ -55,6 +80,98 @@ fn sample_high_temperature_still_valid() {
     let logits = [0.1f32, 0.2, 0.9, 0.05];
     let idx = sample(&logits, 100.0);
     assert!((idx as usize) < logits.len());
+}
+
+// ── xorshift_f32 ─────────────────────────────────────────────────────
+
+#[test]
+fn xorshift_range_0_to_1() {
+    for _ in 0..1000 {
+        let v = xorshift_f32();
+        assert!(v >= 0.0 && v < 1.0, "xorshift out of range: {v}");
+    }
+}
+
+#[test]
+fn xorshift_not_constant() {
+    let a = xorshift_f32();
+    let b = xorshift_f32();
+    let c = xorshift_f32();
+    assert!(a != b || b != c, "xorshift returned same value 3 times");
+}
+
+// ── sample (softmax + random) ────────────────────────────────────────
+
+#[test]
+fn sample_temperature_distribution_favors_max() {
+    // With low temperature, sampling should almost always pick the max logit
+    let logits = [0.0f32, 0.0, 10.0, 0.0];
+    let mut counts = [0u32; 4];
+    for _ in 0..200 {
+        let idx = sample(&logits, 0.1);
+        counts[idx as usize] += 1;
+    }
+    assert!(counts[2] > 150, "max logit should dominate at low temp, got {}", counts[2]);
+}
+
+#[test]
+fn sample_high_temperature_spreads_distribution() {
+    // With very high temperature, all tokens should get some hits
+    let logits = [1.0f32, 1.0, 1.0, 1.0];
+    let mut counts = [0u32; 4];
+    for _ in 0..400 {
+        let idx = sample(&logits, 10.0);
+        counts[idx as usize] += 1;
+    }
+    for (i, &c) in counts.iter().enumerate() {
+        assert!(c > 20, "token {i} should appear with uniform logits, got {c}");
+    }
+}
+
+// ── repetition penalty ───────────────────────────────────────────────
+
+#[test]
+fn repetition_penalty_reduces_positive_logits() {
+    let model = mock_model(4, 1, 1, 4);
+    let mut state = InferenceState::new(&model, 16);
+    state.logits = vec![2.0, 4.0, 6.0, 8.0];
+    state.apply_repetition_penalty(&[1, 3], 2.0);
+    assert_eq!(state.logits[0], 2.0); // untouched
+    assert_eq!(state.logits[1], 2.0); // 4.0 / 2.0
+    assert_eq!(state.logits[2], 6.0); // untouched
+    assert_eq!(state.logits[3], 4.0); // 8.0 / 2.0
+}
+
+#[test]
+fn repetition_penalty_amplifies_negative_logits() {
+    let model = mock_model(4, 1, 1, 4);
+    let mut state = InferenceState::new(&model, 16);
+    state.logits = vec![-2.0, -4.0, 1.0, -6.0];
+    state.apply_repetition_penalty(&[0, 1], 2.0);
+    assert_eq!(state.logits[0], -4.0);  // -2.0 * 2.0
+    assert_eq!(state.logits[1], -8.0);  // -4.0 * 2.0
+    assert_eq!(state.logits[2], 1.0);   // untouched
+    assert_eq!(state.logits[3], -6.0);  // untouched
+}
+
+#[test]
+fn repetition_penalty_1_0_is_noop() {
+    let model = mock_model(4, 1, 1, 4);
+    let mut state = InferenceState::new(&model, 16);
+    state.logits = vec![1.0, 2.0, 3.0, 4.0];
+    let before = state.logits.clone();
+    state.apply_repetition_penalty(&[0, 1, 2, 3], 1.0);
+    assert_eq!(state.logits, before);
+}
+
+#[test]
+fn repetition_penalty_out_of_range_token_ignored() {
+    let model = mock_model(4, 1, 1, 4);
+    let mut state = InferenceState::new(&model, 16);
+    state.logits = vec![1.0, 2.0, 3.0, 4.0];
+    let before = state.logits.clone();
+    state.apply_repetition_penalty(&[999], 2.0); // token 999 > vocab size
+    assert_eq!(state.logits, before);
 }
 
 // ── build_rope_freqs ───────────────────────────────────────────────────
