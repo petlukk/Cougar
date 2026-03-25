@@ -8,25 +8,25 @@ use crate::model::BitNetModel;
 use crate::threadpool::ThreadPool;
 
 pub struct InferenceState {
-    pool: ThreadPool,
-    x: Vec<f32>,
-    x_norm: Vec<f32>,
-    x_quant: Vec<i8>,
-    q: Vec<f32>,
-    k: Vec<f32>,
-    v: Vec<f32>,
-    attn_out: Vec<f32>,
-    attn_out_quant: Vec<i8>,
-    gate: Vec<f32>,
-    up: Vec<f32>,
-    hidden: Vec<f32>,
-    hidden_quant: Vec<i8>,
-    logits: Vec<f32>,
-    tmp: Vec<f32>,
-    k_cache: Vec<f32>,
-    v_cache: Vec<f32>,
-    rope_freqs: Vec<f32>,
-    max_seq_len: usize,
+    pub(crate) pool: ThreadPool,
+    pub(crate) x: Vec<f32>,
+    pub(crate) x_norm: Vec<f32>,
+    pub(crate) x_quant: Vec<i8>,
+    pub(crate) q: Vec<f32>,
+    pub(crate) k: Vec<f32>,
+    pub(crate) v: Vec<f32>,
+    pub(crate) attn_out: Vec<f32>,
+    pub(crate) attn_out_quant: Vec<i8>,
+    pub(crate) gate: Vec<f32>,
+    pub(crate) up: Vec<f32>,
+    pub(crate) hidden: Vec<f32>,
+    pub(crate) hidden_quant: Vec<i8>,
+    pub(crate) logits: Vec<f32>,
+    pub(crate) tmp: Vec<f32>,
+    pub(crate) k_cache: Vec<f32>,
+    pub(crate) v_cache: Vec<f32>,
+    pub(crate) rope_freqs: Vec<f32>,
+    pub(crate) max_seq_len: usize,
 }
 
 pub(crate) fn build_rope_freqs(freqs: &mut [f32], head_dim: usize, pos: usize, theta: f32) {
@@ -38,16 +38,11 @@ pub(crate) fn build_rope_freqs(freqs: &mut [f32], head_dim: usize, pos: usize, t
 }
 
 pub(crate) fn apply_rope(data: &mut [f32], freqs: &[f32], head_dim: usize, n_heads: usize) {
-    for h in 0..n_heads {
-        let off = h * head_dim;
-        for i in 0..head_dim / 2 {
-            let cos = freqs[2 * i];
-            let sin = freqs[2 * i + 1];
-            let r = data[off + 2 * i];
-            let im = data[off + 2 * i + 1];
-            data[off + 2 * i] = r * cos - im * sin;
-            data[off + 2 * i + 1] = r * sin + im * cos;
-        }
+    unsafe {
+        ffi::apply_rope_f32(
+            data.as_ptr(), freqs.as_ptr(), data.as_mut_ptr(),
+            head_dim as i32, n_heads as i32,
+        );
     }
 }
 
@@ -388,10 +383,8 @@ impl InferenceState {
         let mut output = Vec::with_capacity(prompt_tokens.len() + max_tokens);
 
         let prefill_start = Instant::now();
-        for (i, &tok) in prompt_tokens.iter().enumerate() {
-            state.forward(model, tok, i);
-            output.push(tok);
-        }
+        state.prefill(model, prompt_tokens);
+        output.extend_from_slice(prompt_tokens);
         let prefill_ms = prefill_start.elapsed().as_secs_f64() * 1000.0;
 
         let first_tok_start = Instant::now();
