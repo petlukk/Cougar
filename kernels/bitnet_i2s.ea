@@ -60,9 +60,8 @@ export func i2_dot_i8(
 }
 
 // Multi-row dot product: 4 weight rows × one activation vector.
-// Group-first interleaving: process each bit-group across all 4 rows
-// before moving to the next group. This gives 4-way ILP — between
-// consecutive writes to r0, three independent ops on r1/r2/r3 execute.
+// Fused half loop + dual accumulators per row (autoresearch-optimized).
+// Both 16-byte halves processed inline, r*a and r*b accumulate independently.
 export func i2_dot_i8_4row(
     rw0: *restrict u8,
     rw1: *restrict u8,
@@ -76,10 +75,14 @@ export func i2_dot_i8_4row(
     let s6: u8x16 = splat(6)
     let s4: u8x16 = splat(4)
     let s2: u8x16 = splat(2)
-    let mut r0: i32x4 = splat(0)
-    let mut r1: i32x4 = splat(0)
-    let mut r2: i32x4 = splat(0)
-    let mut r3: i32x4 = splat(0)
+    let mut r0a: i32x4 = splat(0)
+    let mut r1a: i32x4 = splat(0)
+    let mut r2a: i32x4 = splat(0)
+    let mut r3a: i32x4 = splat(0)
+    let mut r0b: i32x4 = splat(0)
+    let mut r1b: i32x4 = splat(0)
+    let mut r2b: i32x4 = splat(0)
+    let mut r3b: i32x4 = splat(0)
     let n_blocks: i32 = n / 128
 
     let mut blk: i32 = 0
@@ -87,55 +90,67 @@ export func i2_dot_i8_4row(
         let bw: i32 = blk * 32
         let ba: i32 = blk * 128
 
-        let mut half: i32 = 0
-        while half < 2 {
-            let pw: i32 = bw + half * 16
-            let off: i32 = half * 16
+        // Half 0: first 16 bytes
+        let a0: i8x16 = load(activations, ba)
+        let a1: i8x16 = load(activations, ba + 32)
+        let a2: i8x16 = load(activations, ba + 64)
+        let a3: i8x16 = load(activations, ba + 96)
+        let p0: u8x16 = load(rw0, bw)
+        let p1: u8x16 = load(rw1, bw)
+        let p2: u8x16 = load(rw2, bw)
+        let p3: u8x16 = load(rw3, bw)
 
-            let a0: i8x16 = load(activations, ba + off)
-            let a1: i8x16 = load(activations, ba + 32 + off)
-            let a2: i8x16 = load(activations, ba + 64 + off)
-            let a3: i8x16 = load(activations, ba + 96 + off)
+        r0a = r0a .+ maddubs_i32((p0 .>> s6) .& mask, a0)
+        r1a = r1a .+ maddubs_i32((p1 .>> s6) .& mask, a0)
+        r2a = r2a .+ maddubs_i32((p2 .>> s6) .& mask, a0)
+        r3a = r3a .+ maddubs_i32((p3 .>> s6) .& mask, a0)
+        r0a = r0a .+ maddubs_i32((p0 .>> s4) .& mask, a1)
+        r1a = r1a .+ maddubs_i32((p1 .>> s4) .& mask, a1)
+        r2a = r2a .+ maddubs_i32((p2 .>> s4) .& mask, a1)
+        r3a = r3a .+ maddubs_i32((p3 .>> s4) .& mask, a1)
+        r0a = r0a .+ maddubs_i32((p0 .>> s2) .& mask, a2)
+        r1a = r1a .+ maddubs_i32((p1 .>> s2) .& mask, a2)
+        r2a = r2a .+ maddubs_i32((p2 .>> s2) .& mask, a2)
+        r3a = r3a .+ maddubs_i32((p3 .>> s2) .& mask, a2)
+        r0a = r0a .+ maddubs_i32(p0 .& mask, a3)
+        r1a = r1a .+ maddubs_i32(p1 .& mask, a3)
+        r2a = r2a .+ maddubs_i32(p2 .& mask, a3)
+        r3a = r3a .+ maddubs_i32(p3 .& mask, a3)
 
-            // Load all 4 packed weights upfront
-            let p0: u8x16 = load(rw0, pw)
-            let p1: u8x16 = load(rw1, pw)
-            let p2: u8x16 = load(rw2, pw)
-            let p3: u8x16 = load(rw3, pw)
+        // Half 1: second 16 bytes (independent accumulators)
+        let b0: i8x16 = load(activations, ba + 16)
+        let b1: i8x16 = load(activations, ba + 48)
+        let b2: i8x16 = load(activations, ba + 80)
+        let b3: i8x16 = load(activations, ba + 112)
+        let q0: u8x16 = load(rw0, bw + 16)
+        let q1: u8x16 = load(rw1, bw + 16)
+        let q2: u8x16 = load(rw2, bw + 16)
+        let q3: u8x16 = load(rw3, bw + 16)
 
-            // Group 0 (bits 7:6) across all rows — 4-way ILP
-            r0 = r0 .+ maddubs_i32((p0 .>> s6) .& mask, a0)
-            r1 = r1 .+ maddubs_i32((p1 .>> s6) .& mask, a0)
-            r2 = r2 .+ maddubs_i32((p2 .>> s6) .& mask, a0)
-            r3 = r3 .+ maddubs_i32((p3 .>> s6) .& mask, a0)
+        r0b = r0b .+ maddubs_i32((q0 .>> s6) .& mask, b0)
+        r1b = r1b .+ maddubs_i32((q1 .>> s6) .& mask, b0)
+        r2b = r2b .+ maddubs_i32((q2 .>> s6) .& mask, b0)
+        r3b = r3b .+ maddubs_i32((q3 .>> s6) .& mask, b0)
+        r0b = r0b .+ maddubs_i32((q0 .>> s4) .& mask, b1)
+        r1b = r1b .+ maddubs_i32((q1 .>> s4) .& mask, b1)
+        r2b = r2b .+ maddubs_i32((q2 .>> s4) .& mask, b1)
+        r3b = r3b .+ maddubs_i32((q3 .>> s4) .& mask, b1)
+        r0b = r0b .+ maddubs_i32((q0 .>> s2) .& mask, b2)
+        r1b = r1b .+ maddubs_i32((q1 .>> s2) .& mask, b2)
+        r2b = r2b .+ maddubs_i32((q2 .>> s2) .& mask, b2)
+        r3b = r3b .+ maddubs_i32((q3 .>> s2) .& mask, b2)
+        r0b = r0b .+ maddubs_i32(q0 .& mask, b3)
+        r1b = r1b .+ maddubs_i32(q1 .& mask, b3)
+        r2b = r2b .+ maddubs_i32(q2 .& mask, b3)
+        r3b = r3b .+ maddubs_i32(q3 .& mask, b3)
 
-            // Group 1 (bits 5:4) across all rows
-            r0 = r0 .+ maddubs_i32((p0 .>> s4) .& mask, a1)
-            r1 = r1 .+ maddubs_i32((p1 .>> s4) .& mask, a1)
-            r2 = r2 .+ maddubs_i32((p2 .>> s4) .& mask, a1)
-            r3 = r3 .+ maddubs_i32((p3 .>> s4) .& mask, a1)
-
-            // Group 2 (bits 3:2) across all rows
-            r0 = r0 .+ maddubs_i32((p0 .>> s2) .& mask, a2)
-            r1 = r1 .+ maddubs_i32((p1 .>> s2) .& mask, a2)
-            r2 = r2 .+ maddubs_i32((p2 .>> s2) .& mask, a2)
-            r3 = r3 .+ maddubs_i32((p3 .>> s2) .& mask, a2)
-
-            // Group 3 (bits 1:0) across all rows
-            r0 = r0 .+ maddubs_i32(p0 .& mask, a3)
-            r1 = r1 .+ maddubs_i32(p1 .& mask, a3)
-            r2 = r2 .+ maddubs_i32(p2 .& mask, a3)
-            r3 = r3 .+ maddubs_i32(p3 .& mask, a3)
-
-            half = half + 1
-        }
         blk = blk + 1
     }
 
-    scores[0] = reduce_add(r0)
-    scores[1] = reduce_add(r1)
-    scores[2] = reduce_add(r2)
-    scores[3] = reduce_add(r3)
+    scores[0] = reduce_add(r0a .+ r0b)
+    scores[1] = reduce_add(r1a .+ r1b)
+    scores[2] = reduce_add(r2a .+ r2b)
+    scores[3] = reduce_add(r3a .+ r3b)
 }
 
 // Fused dual 4-row dot product: 4 gate rows + 4 up rows × shared activations.
