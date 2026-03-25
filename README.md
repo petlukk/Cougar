@@ -14,6 +14,8 @@ A ~7,100-line LLM inference engine written in Rust + [Ea](https://github.com/pet
 
 **Supported models:** BitNet b1.58 (I2_S) and Llama-family Q4_K_M (Llama 3, Mistral, Qwen)
 
+📦 **1004 KB** binary (x86-64) · **1.6 MB** binary (ARM aarch64) · All kernels embedded, zero runtime dependencies
+
 ## Performance
 
 ### x86-64 (16 threads, AVX2, native Linux)
